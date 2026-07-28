@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#9a7b2c"/>
+      <stop offset="55%" stop-color="#D4AF37"/>
+      <stop offset="100%" stop-color="#f0d78c"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="#020408"/>
+  <rect x="24" y="24" width="464" height="464" rx="96" fill="none" stroke="url(#g)" stroke-width="16"/>
+  <text x="256" y="340" text-anchor="middle" font-size="260" font-family="Segoe UI, Tahoma, Arial, sans-serif" fill="url(#g)" font-weight="700">ح</text>
+</svg>

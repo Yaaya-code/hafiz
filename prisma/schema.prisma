@@ -1,0 +1,724 @@
+// Hafiz — Production Database Schema
+// PostgreSQL + Supabase ready
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum UserRole {
+  STUDENT
+  TEACHER
+  ADMIN
+}
+
+enum PageStatus {
+  MASTERED
+  GOOD
+  NEEDS_REVIEW
+  WEAK
+  FORGOTTEN
+  NOT_MEMORIZED
+}
+
+enum MistakeType {
+  HARAKA
+  LETTER
+  WORD
+  SKIP
+  ORDER
+  MUTASHABIH
+  OTHER
+}
+
+enum QuizType {
+  FILL_BLANK
+  NEXT_AYAH
+  PREV_AYAH
+  ARRANGE
+  CHOOSE_WORD
+  IDENTIFY_SURAH
+  IDENTIFY_PAGE
+  IDENTIFY_JUZ
+  MUTASHABIH_CHALLENGE
+  SPEED
+  RANDOM
+  WEAK_PAGES
+  DAILY
+  TIMED
+}
+
+enum GoalPeriod {
+  DAILY
+  WEEKLY
+  MONTHLY
+  YEARLY
+}
+
+enum RevisionStyle {
+  INTENSIVE
+  BALANCED
+  LIGHT
+}
+
+enum NotificationType {
+  REMINDER
+  PREDICTION
+  ACHIEVEMENT
+  SOCIAL
+  SYSTEM
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String?   @unique
+  /// Anonymous / device key for local-first sync before full login
+  guestKey      String?   @unique
+  name          String?
+  image         String?
+  emailVerified DateTime?
+  passwordHash  String?
+  role          UserRole  @default(STUDENT)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts            Account[]
+  sessions            Session[]
+  profile             Profile?
+  progress            UserProgress[]
+  revisions           RevisionSession[]
+  mistakes            Mistake[]
+  bookmarks           Bookmark[]
+  notes               Note[]
+  achievements        UserAchievement[]
+  notifications       Notification[]
+  goals               Goal[]
+  quizAttempts        QuizAttempt[]
+  taughtClasses       ClassRoom[]            @relation("TeacherClasses")
+  memberships         ClassMember[]
+  friends             Friendship[]           @relation("UserFriends")
+  friendOf            Friendship[]           @relation("FriendOf")
+  dailyStats          DailyAnalytics[]
+  aiSuggestions       AISuggestion[]
+  revisionQueue       RevisionQueueItem[]
+  journeyProgress     JourneyProgress[]
+  recitationProgress  RecitationProgress[]
+  ayahProgress        AyahProgress[]
+  syncCursor          SyncCursor?
+  memorizationSessions MemorizationSession[]
+  listeningHistory    UserListeningHistory[]
+  dailyPlans          DailyPlan[]
+  learningProfile     LearningProfile?
+  memorizationScopes  UserMemorizationScope[]
+  /// Application LearningSnapshot mirror (SRS memory, userState, plan cache meta)
+  learningState       LearningStateSnapshot?
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model Profile {
+  id                     String         @id @default(cuid())
+  userId                 String         @unique
+  user                   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bio                    String?
+  startPage              Int            @default(1)
+  currentPage            Int            @default(1)
+  pagesPerDay            Int            @default(1)
+  revisionSessionsPerDay Int            @default(2)
+  dailyMinutes           Int            @default(30)
+  memorizationStrength   Int            @default(3)
+  revisionStyle          RevisionStyle  @default(BALANCED)
+  hafizScore             Int            @default(0)
+  streak                 Int            @default(0)
+  longestStreak          Int            @default(0)
+  lastStreakDate         DateTime?
+  onboardingComplete     Boolean        @default(false)
+  locale                 String         @default("ar")
+  theme                  String         @default("system")
+  privacyPublic          Boolean        @default(false)
+  /// Preferred everyayah reciter id (e.g. alafasy)
+  preferredQariId        String         @default("alafasy")
+  /// Full local HafizProfile / target plan JSON (local-first mirror)
+  targetPlan             Json?
+  /// Memorization selection (juz/surah/range)
+  memorizationSelection  Json?
+  preferences            Json?
+  createdAt              DateTime       @default(now())
+  updatedAt              DateTime       @updatedAt
+}
+
+model Surah {
+  id             Int     @id
+  number         Int     @unique
+  nameAr         String
+  nameEn         String
+  ayahCount      Int
+  revelationType String
+  startPage      Int
+  endPage        Int
+  ayahs          Ayah[]
+}
+
+model Ayah {
+  id       Int    @id @default(autoincrement())
+  surahId  Int
+  surah    Surah  @relation(fields: [surahId], references: [id])
+  number   Int
+  text     String @db.Text
+  page     Int
+  juz      Int
+  hizb     Int
+
+  @@unique([surahId, number])
+  @@index([page])
+  @@index([juz])
+}
+
+model MushafPage {
+  id         Int @id @default(autoincrement())
+  number     Int @unique
+  juz        Int
+  hizb       Int
+  startSurah Int
+  endSurah   Int
+}
+
+model UserProgress {
+  id             String     @id @default(cuid())
+  userId         String
+  user           User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  pageNumber     Int
+  status         PageStatus @default(NOT_MEMORIZED)
+  easeFactor     Float      @default(2.5)
+  intervalDays   Int        @default(0)
+  repetitions    Int        @default(0)
+  confidence     Float      @default(0)
+  mistakeCount   Int        @default(0)
+  lastReviewedAt DateTime?
+  nextReviewAt   DateTime?
+  masteredAt     DateTime?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  @@unique([userId, pageNumber])
+  @@index([userId, status])
+  @@index([userId, nextReviewAt])
+}
+
+model RevisionSession {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  startedAt        DateTime @default(now())
+  completedAt      DateTime?
+  pagesPlanned     Int
+  pagesCompleted   Int      @default(0)
+  durationMinutes  Int?
+  averageQuality   Float?
+  notes            String?  @db.Text
+  items            RevisionQueueItem[]
+}
+
+model RevisionQueueItem {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionId String?
+  session   RevisionSession? @relation(fields: [sessionId], references: [id])
+  pageNumber Int
+  priority  Int              @default(0)
+  reason    String?
+  status    PageStatus
+  completed Boolean          @default(false)
+  quality   Int?
+  createdAt DateTime         @default(now())
+
+  @@index([userId, completed])
+}
+
+model Mistake {
+  id           String      @id @default(cuid())
+  userId       String
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Client-side id for merge/sync
+  clientId     String?
+  ayahId       Int?
+  pageNumber   Int         @default(0)
+  surahId      Int
+  ayahNumber   Int?
+  type         MistakeType
+  /// Free-form type string when outside enum (MISSING_WORD, QUIZ_WRONG, …)
+  typeRaw      String?
+  difficulty   Int         @default(3)
+  frequency    Int         @default(1)
+  note         String?
+  resolved     Boolean     @default(false)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  history      MistakeHistory[]
+
+  @@index([userId, pageNumber])
+  @@index([userId, type])
+  @@index([userId, surahId, ayahNumber])
+  @@unique([userId, clientId])
+}
+
+model MistakeHistory {
+  id        String   @id @default(cuid())
+  mistakeId String
+  mistake   Mistake  @relation(fields: [mistakeId], references: [id], onDelete: Cascade)
+  action    String
+  note      String?
+  createdAt DateTime @default(now())
+}
+
+model MutashabihGroup {
+  id          String @id @default(cuid())
+  title       String
+  description String? @db.Text
+  tips        String[] 
+  items       MutashabihItem[]
+}
+
+model MutashabihItem {
+  id            String          @id @default(cuid())
+  groupId       String
+  group         MutashabihGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  surahId       Int
+  ayahNumber    Int
+  text          String          @db.Text
+  highlightWords String[]
+  contextNote   String?
+  sortOrder     Int             @default(0)
+}
+
+model Bookmark {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clientId   String?
+  type       String
+  surahId    Int?
+  ayahNumber Int?
+  pageNumber Int?
+  sessionId  String?
+  label      String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@unique([userId, clientId])
+}
+
+model Note {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clientId   String?
+  content    String   @db.Text
+  surahId    Int?
+  ayahNumber Int?
+  pageNumber Int?
+  sessionId  String?
+  mistakeId  String?
+  tag        String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([userId, pageNumber])
+  @@unique([userId, clientId])
+}
+
+model Achievement {
+  id          String            @id @default(cuid())
+  code        String            @unique
+  title       String
+  description String
+  icon        String
+  target      Int               @default(1)
+  users       UserAchievement[]
+}
+
+model UserAchievement {
+  id            String      @id @default(cuid())
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievementId String
+  achievement   Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+  progress      Int         @default(0)
+  unlocked      Boolean     @default(false)
+  unlockedAt    DateTime?
+
+  @@unique([userId, achievementId])
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  body      String
+  type      NotificationType
+  read      Boolean          @default(false)
+  href      String?
+  createdAt DateTime         @default(now())
+
+  @@index([userId, read])
+}
+
+model Goal {
+  id        String     @id @default(cuid())
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  period    GoalPeriod
+  target    Int
+  current   Int        @default(0)
+  unit      String
+  completed Boolean    @default(false)
+  startsAt  DateTime   @default(now())
+  endsAt    DateTime?
+  createdAt DateTime   @default(now())
+}
+
+model QuizAttempt {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type        QuizType
+  score       Float
+  totalQuestions Int
+  correct     Int
+  durationSec Int?
+  metadata    Json?
+  createdAt   DateTime  @default(now())
+
+  @@index([userId, type])
+}
+
+model DailyAnalytics {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date             DateTime @db.Date
+  reviewsCompleted Int      @default(0)
+  reviewsPlanned   Int      @default(0)
+  quizScore        Float?
+  studyMinutes     Int      @default(0)
+  mistakes         Int      @default(0)
+  retentionRate    Float?
+  hafizScore       Int?
+
+  @@unique([userId, date])
+}
+
+model AISuggestion {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title      String
+  body       String
+  actionLabel String?
+  href       String?
+  urgency    String   @default("medium")
+  dismissed  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime?
+}
+
+model ClassRoom {
+  id          String        @id @default(cuid())
+  name        String
+  description String?
+  teacherId   String
+  teacher     User          @relation("TeacherClasses", fields: [teacherId], references: [id])
+  inviteCode  String        @unique @default(cuid())
+  createdAt   DateTime      @default(now())
+  members     ClassMember[]
+  assignments Assignment[]
+}
+
+model ClassMember {
+  id        String    @id @default(cuid())
+  classId   String
+  class     ClassRoom @relation(fields: [classId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  joinedAt  DateTime  @default(now())
+  active    Boolean   @default(true)
+
+  @@unique([classId, userId])
+}
+
+model Assignment {
+  id          String    @id @default(cuid())
+  classId     String
+  class       ClassRoom @relation(fields: [classId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  type        String
+  dueAt       DateTime?
+  payload     Json?
+  createdAt   DateTime  @default(now())
+}
+
+model Friendship {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation("UserFriends", fields: [userId], references: [id], onDelete: Cascade)
+  friendId  String
+  friend    User     @relation("FriendOf", fields: [friendId], references: [id], onDelete: Cascade)
+  status    String   @default("pending")
+  createdAt DateTime @default(now())
+
+  @@unique([userId, friendId])
+}
+
+model SystemSetting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value Json
+}
+
+// ——— Expanded domain: audio + ayah-level tracking ———
+
+model Qari {
+  id               String            @id @default(cuid())
+  slug             String            @unique
+  nameAr           String
+  nameEn           String
+  imageUrl         String?
+  everyAyahFolder  String
+  style            String?
+  bitrate          String?
+  recitations      AudioRecitation[]
+}
+
+model AudioRecitation {
+  id           String @id @default(cuid())
+  qariId       String
+  qari         Qari   @relation(fields: [qariId], references: [id], onDelete: Cascade)
+  surahNumber  Int
+  ayahNumber   Int
+  audioUrl     String
+  durationSec  Int?
+
+  @@unique([qariId, surahNumber, ayahNumber])
+  @@index([surahNumber, ayahNumber])
+}
+
+model AyahProgress {
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  surahNumber      Int
+  ayahNumber       Int
+  listenCount      Int       @default(0)
+  practiceCount    Int       @default(0)
+  successTests     Int       @default(0)
+  failTests        Int       @default(0)
+  confidence       Float     @default(0)
+  status           String    @default("NOT_STARTED")
+  memorizedAt      DateTime?
+  lastRevisedAt    DateTime?
+  attemptsToMaster Int?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([userId, surahNumber, ayahNumber])
+  @@index([userId, status])
+  @@index([userId, lastRevisedAt])
+}
+
+/// Daily journey status (local-first mirror of hafiz_journey_progress_v1)
+model JourneyProgress {
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// YYYY-MM-DD journey day
+  date             DateTime  @db.Date
+  completedStepIds String[]
+  finished         Boolean   @default(false)
+  currentStepId    String?
+  streakCount      Int       @default(0)
+  startedAt        DateTime?
+  finishedAt       DateTime?
+  payload          Json?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([userId, date])
+  @@index([userId, finished])
+}
+
+/// Per-surah recitation mastery / continue-from (hafiz_recitation_progress_v1)
+model RecitationProgress {
+  id                String    @id @default(cuid())
+  userId            String
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  surahNumber       Int
+  lastCompletedAyah Int       @default(0)
+  continueFromAyah  Int       @default(1)
+  totalAyahs        Int       @default(0)
+  accuracy          Float?
+  mistakesCount     Int?
+  lastSessionAt     DateTime?
+  /// Optional page-level rollups
+  pageStats         Json?
+  /// Listening audio counters / last qari
+  listenedAudio     Json?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([userId, surahNumber])
+  @@index([userId, lastSessionAt])
+}
+
+/// Tracks last successful cloud sync for conflict resolution
+model SyncCursor {
+  id            String    @id @default(cuid())
+  userId        String    @unique
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lastSyncedAt  DateTime?
+  clientVersion Int       @default(0)
+  deviceId      String?
+  payloadHash   String?
+  updatedAt     DateTime  @updatedAt
+}
+
+model MemorizationSession {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  qariId          String?
+  startedAt       DateTime  @default(now())
+  completedAt     DateTime?
+  listenCount     Int       @default(0)
+  practiceCount   Int       @default(0)
+  masteredCount   Int       @default(0)
+  durationMinutes Int?
+  metadata        Json?
+}
+
+model UserMemorizationScope {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mode      String // JUZ | SURAH | RANGE
+  payload   Json // selections with strength
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model UserListeningHistory {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  surahNumber Int
+  ayahNumber  Int
+  qariId      String?
+  durationSec Int      @default(0)
+  source      String? // reader | memorize | listen_mode
+  createdAt   DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([userId, surahNumber])
+}
+
+model DailyPlan {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date      DateTime @db.Date
+  kind      String // revision | new_hifz | mutashabihat | listening
+  minutes   Int
+  payload   Json
+  completed Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, date, kind])
+  @@index([userId, date])
+}
+
+model LearningProfile {
+  id            String   @id @default(cuid())
+  userId        String   @unique
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  learningStyle String // LISTENING | READING | WRITING | LISTEN_AND_READ | WITH_TEACHER
+  preferredQari String?
+  weaknesses    Json?
+  updatedAt     DateTime @updatedAt
+  createdAt     DateTime @default(now())
+}
+
+/// Full application-layer LearningSnapshot (local-first brain state) for cloud restore.
+/// Payload holds userState, revisionMemory, planCache, lastDecision, cacheMeta.
+model LearningStateSnapshot {
+  id            String   @id @default(cuid())
+  userId        String   @unique
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payload       Json
+  deviceId      String?
+  clientVersion Int      @default(1)
+  /// Client updatedAt ISO for last-write-wins merge
+  clientUpdatedAt DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([userId, updatedAt])
+}
+
+model MutashabihRecord {
+  id          String   @id @default(cuid())
+  type        String
+  difficulty  Int      @default(3)
+  title       String
+  description String?  @db.Text
+  difference  String?  @db.Text
+  tips        String[]
+  ayahPayload Json     // array of ayah refs + highlights
+  juz         Int[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([type, difficulty])
+}
+

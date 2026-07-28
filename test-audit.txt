@@ -1,0 +1,257 @@
+
+> hafiz@0.1.0 test
+> vitest run --run
+
+
+ RUN  v3.2.4 C:/Users/YAHYA/Projects/hafiz
+
+ ✓ src/lib/auth/password.test.ts (3 tests) 263ms
+ ✓ src/core/rules/logic-bible/logic-bible-coverage.test.ts (7 tests) 41ms
+ ✓ src/core/rules/logic-bible/revision/revision-rules.test.ts (7 tests) 40ms
+ ✓ src/core/adapters/adapters.test.ts (6 tests) 41ms
+ ✓ src/core/rules/logic-bible/progression/progression-rules.test.ts (8 tests) 36ms
+ ✓ src/core/architecture/architecture.test.ts (12 tests) 56ms
+stdout | src/application/planning/pointer-trace.test.ts > POINTER TRACE: Baqarah 1-100 + Juz Amma + continue_forward > documents where pointer is created and where generatePlan overwrites it
+
+=== POINTER TRACE LOG ===
+1. findIncompleteMemorizationPointer → {"surah":2,"ayah":101}
+   file: bootstrap-from-profile.ts  fn: findIncompleteMemorizationPointer
+1b. resolveBootstrapHifzPointer → {"surah":2,"ayah":101}
+   file: bootstrap-from-profile.ts  fn: resolveBootstrapHifzPointer
+   max(surahNumber) in selection = 114
+2. enrichProgressFromProfile.hifzPointer → {"surah":2,"ayah":101}
+   file: bootstrap-from-profile.ts  fn: enrichProgressFromProfile
+2b. AFTER buildPlanningContext (state pointer) → {"surah":2,"ayah":101}
+   file: planning-context-builder.ts  fn: buildPlanningContext → adaptAppProgressToUserState
+3. Decision: newHifzEnabled=true revisionOnly=false track=continue_from_last_surah
+   trackMeta.continueAfterSurah=114 lastMemorizedSurah=114
+   file: decision-runner / S-003 existingMemorizerTrackRule
+3b. pointer BEFORE generatePlan (unchanged by Decision) → {"surah":2,"ayah":101}
+4. plan.startingState pointer (input clone) → {"surah":2,"ayah":101}
+4b. day1 NEW_HIFZ → surah=2 from=101 label=حفظ جديد: البقرة 101–101
+4c. days with NEW_HIFZ: 7 / 7
+   generatePlan applies applyDecisionTrackToState when track=continue_from_last_surah:
+   continueAfterSurah=114 → pointer set to {114,1} + paused=true (after>=114)
+   file: plan-generator.ts  fn: applyDecisionTrackToState lines ~192-205
+4d. FIXED: day1 NEW_HIFZ starts at Baqarah 101
+
+
+ ✓ src/application/planning/pointer-trace.test.ts (2 tests) 93ms
+ ✓ src/application/planning/pipeline-learning.test.ts (6 tests) 102ms
+ ✓ src/core/planning/revision-policy.test.ts (7 tests) 42ms
+ ✓ src/application/planning/nas-horizon-bug.test.ts (5 tests) 142ms
+ ✓ src/application/learning/execution-service.test.ts (3 tests) 93ms
+ ✓ src/application/planning/hifz-cursor.test.ts (5 tests) 120ms
+stdout | src/application/planning/journey-entry-audit.test.ts > Journey entry state-diff audit > A) plan-reveal sequence: force today then week keeps day:1 cache
+AUDIT_A {
+  "keysAfterToday": [
+    "2026-07-26:1"
+  ],
+  "keysAfterWeek": [
+    "2026-07-26:1",
+    "2026-07-26:7"
+  ],
+  "todayItems": [
+    {
+      "type": "NEAR_REVISION",
+      "surah": 2,
+      "from": 82,
+      "to": 90,
+      "label": "تثبيت جوار الحفظ: البقرة · 82–90"
+    },
+    {
+      "type": "NEW_HIFZ",
+      "surah": 2,
+      "from": 91,
+      "to": 94,
+      "label": "حفظ جديد: البقرة 91–94"
+    }
+  ],
+  "weekDay0": [
+    {
+      "type": "NEAR_REVISION",
+      "surah": 2,
+      "from": 82,
+      "to": 90,
+      "label": "تثبيت جوار الحفظ: البقرة · 82–90"
+    },
+    {
+      "type": "NEW_HIFZ",
+      "surah": 2,
+      "from": 91,
+      "to": 94,
+      "label": "حفظ جديد: البقرة 91–94"
+    }
+  ],
+  "cursorAfterWeek": {
+    "surah": 2,
+    "ayah": 91
+  },
+  "nearStackAfterWeek": [],
+  "day1CachePresent": true,
+  "day7CachePresent": true
+}
+
+ ✓ src/application/planning/planning-service.test.ts (9 tests) 148ms
+stdout | src/application/planning/journey-entry-audit.test.ts > Journey entry state-diff audit > B) dashboard/journey load after plan-reveal: getTodayPlan recompute + week/month
+AUDIT_B {
+  "beforeJourney": {
+    "cursor": {
+      "surah": 2,
+      "ayah": 91
+    },
+    "cacheKeys": [
+      "2026-07-26:1",
+      "2026-07-26:7"
+    ],
+    "nearStackLen": 0
+  },
+  "after": {
+    "cursor": {
+      "surah": 2,
+      "ayah": 91
+    },
+    "cacheKeys": [
+      "2026-07-26:1",
+      "2026-07-26:7",
+      "2026-07-26:30"
+    ],
+    "nearStackLen": 0
+  },
+  "todayFromCache": true,
+  "weekFromCache": true,
+  "monthFromCache": false,
+  "todayItems": [
+    {
+      "type": "NEAR_REVISION",
+      "surah": 2,
+      "from": 82,
+      "to": 90,
+      "label": "تثبيت جوار الحفظ: البقرة · 82–90"
+    },
+    {
+      "type": "NEW_HIFZ",
+      "surah": 2,
+      "from": 91,
+      "to": 94,
+      "label": "حفظ جديد: البقرة 91–94"
+    }
+  ],
+  "viewSteps": [
+    {
+      "kind": "revision",
+      "surah": 2,
+      "from": 82,
+      "title": "تثبيت جوار الحفظ: البقرة · 82–90"
+    },
+    {
+      "kind": "new_hifz",
+      "surah": 2,
+      "from": 91,
+      "title": "حفظ جديد: البقرة 91–94"
+    },
+    {
+      "kind": "finish",
+      "title": "دعاء ونية ليوم الغد"
+    }
+  ],
+  "todayHasNas": false
+}
+
+ ✓ src/core/planning/plan-generator.test.ts (10 tests) 38ms
+stdout | src/application/planning/journey-entry-audit.test.ts > Journey entry state-diff audit > C) double useOrchestratedPlan (dashboard + journey) does not flip to Nas
+AUDIT_C {
+  afterDash: [
+    {
+      type: 'NEAR_REVISION',
+      surah: 2,
+      from: 82,
+      to: 90,
+      label: 'تثبيت جوار الحفظ: البقرة · 82–90'
+    },
+    {
+      type: 'NEW_HIFZ',
+      surah: 2,
+      from: 91,
+      to: 94,
+      label: 'حفظ جديد: البقرة 91–94'
+    }
+  ],
+  afterJourney: [
+    {
+      type: 'NEAR_REVISION',
+      surah: 2,
+      from: 82,
+      to: 90,
+      label: 'تثبيت جوار الحفظ: البقرة · 82–90'
+    },
+    {
+      type: 'NEW_HIFZ',
+      surah: 2,
+      from: 91,
+      to: 94,
+      label: 'حفظ جديد: البقرة 91–94'
+    }
+  ],
+  t2fromCache: true,
+  w2fromCache: true,
+  m2fromCache: true,
+  cursor: { surah: 2, ayah: 91 }
+}
+
+ ✓ src/application/planning/phase2-adaptive.test.ts (5 tests) 502ms
+   ✓ Phase 2 Case 4: open dashboard many times — actual progress fixed > 20 plan opens do not move cursor or invent lastAdvancedDate  391ms
+stdout | src/application/planning/journey-entry-audit.test.ts > Journey entry state-diff audit > D) LEARNING_SNAPSHOT re-entry: load after save must not replace today with month day-N
+AUDIT_D {
+  againFromCache: true,
+  items: [
+    {
+      type: 'NEAR_REVISION',
+      surah: 2,
+      from: 82,
+      to: 90,
+      label: 'تثبيت جوار الحفظ: البقرة · 82–90'
+    },
+    {
+      type: 'NEW_HIFZ',
+      surah: 2,
+      from: 91,
+      to: 94,
+      label: 'حفظ جديد: البقرة 91–94'
+    }
+  ],
+  cacheKeys: [ '2026-07-26:1', '2026-07-26:7', '2026-07-26:30' ]
+}
+
+ ✓ src/application/planning/journey-entry-audit.test.ts (5 tests) 537ms
+ ✓ src/core/revision/revision-intelligence.test.ts (12 tests) 18ms
+ ✓ src/core/planning/quran/chunk-engine.test.ts (8 tests) 19ms
+ ✓ src/core/rules/resolution/decision-engine.test.ts (8 tests) 35ms
+ ✓ src/core/planning/plan-generator-srs.test.ts (9 tests) 33ms
+ ✓ src/lib/sync/local-snapshot.test.ts (7 tests) 19ms
+ ✓ src/lib/sync/learning-merge.test.ts (11 tests) 27ms
+ ✓ src/application/planning/bootstrap-from-profile.test.ts (8 tests) 16ms
+ ✓ src/lib/hafiz-score.test.ts (7 tests) 16ms
+ ✓ src/lib/user-profile.test.ts (5 tests) 16ms
+ ✓ src/lib/api/learning-api-data.test.ts (5 tests) 14ms
+ ✓ src/application/mappers/plan-to-dashboard.test.ts (1 test) 9ms
+stderr | src/lib/auth/config.test.ts > auth config > rejects missing AUTH_SECRET in production
+[auth] AUTH_SECRET is missing in production
+
+stderr | src/lib/auth/config.test.ts > auth config > rejects insecure template AUTH_SECRET in production
+[auth] AUTH_SECRET is insecure for production — set a strong random secret
+
+stderr | src/lib/auth/config.test.ts > auth config > rejects short AUTH_SECRET in production
+[auth] AUTH_SECRET must be at least 32 characters in production
+
+ ✓ src/lib/auth/config.test.ts (8 tests) 12ms
+ ✓ src/core/rules/resolution/decision-validator.test.ts (7 tests) 12ms
+ ✓ src/lib/user-data-reset.test.ts (3 tests) 6ms
+ ✓ src/core/planning/sequential-revision.test.ts (2 tests) 8ms
+
+ Test Files  31 passed (31)
+      Tests  201 passed (201)
+   Start at  11:20:17
+   Duration  5.04s (transform 2.63s, setup 0ms, collect 20.73s, tests 2.56s, environment 11ms, prepare 11.09s)
+
+TEST_EXIT:0 

@@ -1,0 +1,67 @@
+{
+  "name": "حافظ — رفيق حفظ القرآن",
+  "short_name": "حافظ",
+  "description": "منصة ذكية لحفظ ومراجعة القرآن الكريم — رحلة يومية، تسميع، واستماع",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "id": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#020408",
+  "theme_color": "#D4AF37",
+  "lang": "ar",
+  "dir": "rtl",
+  "categories": ["education", "lifestyle"],
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/logo.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "رحلة اليوم",
+      "short_name": "رحلة",
+      "url": "/plans/journey",
+      "description": "افتح ورد اليوم"
+    },
+    {
+      "name": "القرآن",
+      "short_name": "مصحف",
+      "url": "/quran",
+      "description": "افتح المصحف"
+    },
+    {
+      "name": "الحفظ بالاستماع",
+      "short_name": "استماع",
+      "url": "/listen-memorize"
+    },
+    {
+      "name": "المتشابهات",
+      "short_name": "متشابهات",
+      "url": "/mutashabihat",
+      "description": "تمرين المتشابهات"
+    }
+  ]
+}

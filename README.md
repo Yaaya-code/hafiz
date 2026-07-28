@@ -1,36 +1,99 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# حافظ (Hafiz)
 
-## Getting Started
+Intelligent Quran memorization platform — spaced repetition, mutashabihat engine, analytics, teacher tools.
 
-First, run the development server:
+## Stack
+
+- **Next.js 15** (App Router) + **React 19** + **TypeScript**
+- **Tailwind CSS v4** + custom UI (shadcn-style)
+- **Framer Motion** / **Recharts**
+- **Prisma** + PostgreSQL (Supabase-ready)
+- Full **Arabic RTL** (Cairo, Tajawal, Amiri Quran)
+
+## Quick start
 
 ```bash
+cd C:\Users\YAHYA\Projects\hafiz
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Demo path (no auth/DB required)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. Landing → **تجربة لوحة التحكم** or go to `/dashboard`
+2. Or: `/signup` → `/onboarding` → `/dashboard`
+3. Try: Map, Revision, Mutashabihat, Quiz, Stats, Teacher, Admin
 
-## Learn More
+## Main routes
 
-To learn more about Next.js, take a look at the following resources:
+| Route | Description |
+|-------|-------------|
+| `/` | Landing page |
+| `/login`, `/signup` | Auth UI (demo) |
+| `/onboarding` | Personalized plan wizard |
+| `/dashboard` | Main student dashboard |
+| `/map` | 604-page mushaf heatmap |
+| `/revision` | SRS revision engine |
+| `/mutashabihat` | Similar verses explorer |
+| `/quiz` | Multi-type quizzes |
+| `/stats` | Analytics charts |
+| `/goals` | Goals & achievements |
+| `/planner` | Hifz revision planner |
+| `/focus` | Distraction-free mode |
+| `/teacher` | Teacher dashboard |
+| `/admin` | Admin panel |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Database (optional)
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. Copy `.env.example` → `.env`
+2. Set Supabase/PostgreSQL `DATABASE_URL` and `DIRECT_URL`
+3. Run:
 
-## Deploy on Vercel
+```bash
+npx prisma generate
+npx prisma db push
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+UI currently uses **mock data** in `src/lib/mock-data.ts` so you can demo without a DB.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Project structure
+
+```
+src/
+  app/                 # Routes (landing, auth, app shell pages)
+  components/ui/       # Design system
+  components/layout/   # Sidebar, header, shell
+  lib/
+    types.ts           # Domain types
+    srs.ts             # Spaced repetition engine
+    hafiz-score.ts     # 0–1000 score
+    mock-data.ts       # Demo data
+    prisma.ts          # DB client
+prisma/schema.prisma   # Full production schema
+```
+
+## Scripts
+
+```bash
+npm run dev      # Development
+npm run build    # Production build
+npm run start    # Start production server
+npm run lint     # ESLint
+```
+
+## Docs
+
+- [Architecture](./docs/ARCHITECTURE.md)
+- [API](./docs/API.md)
+- Prisma schema: `prisma/schema.prisma`
+- API route map: `src/lib/api/routes.ts`
+
+## Notes
+
+- Auth is **UI-only** (demo). Wire NextAuth or Clerk when ready.
+- Voice mode: full UI at `/voice` — ASR wiring is the next step.
+- Social: `/social` (friends, challenges, leaderboard, privacy).
+- Design: calm Islamic aesthetic, light/dark, mobile-first RTL.
+- PWA: `public/manifest.json` + `public/sw.js` (registers in production).

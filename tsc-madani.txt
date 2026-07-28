@@ -1,0 +1,2 @@
+src/core/rules/logic-bible/progression/p001-readiness-for-new-hifz.ts(98,9): error TS2322: Type 'string | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.

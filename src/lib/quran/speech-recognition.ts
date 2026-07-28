@@ -198,7 +198,7 @@ export class ArabicSpeechSession {
         try {
             rec.start();
             return { ok: true };
-        } catch (e) {
+        } catch  {
             this.running = false;
             return { ok: false, error: "تعذّر بدء الميكروفون." };
         }

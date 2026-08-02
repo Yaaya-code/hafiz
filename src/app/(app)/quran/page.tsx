@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bookmark,
   BookmarkCheck,
@@ -53,7 +53,9 @@ export default function QuranReaderPage() {
   const [qariId, setQariId] = useState("alafasy");
   const [query, setQuery] = useState("");
   const [playing, setPlaying] = useState(false);
+  const [continuous, setContinuous] = useState(false);
   const [repeat, setRepeat] = useState(false);
+  const continuousRef = useRef(false);
   const [noteText, setNoteText] = useState("");
   const [bookmarks, setBookmarks] = useState<ReturnType<typeof loadBookmarks>>(
     []
@@ -120,12 +122,16 @@ export default function QuranReaderPage() {
   const filteredSurahs = useMemo(() => searchSurahs(query), [query]);
 
   function stopAudio() {
+    continuousRef.current = false;
+    setContinuous(false);
     stopGlobalAudio();
     setPlaying(false);
   }
 
   function playCurrent() {
     if (!current) return;
+    continuousRef.current = false;
+    setContinuous(false);
     const url = ayahAudioUrl(qariId, surahNum, ayahNum);
     setPlaying(true);
     playGlobalAudio(url, {
@@ -141,6 +147,39 @@ export default function QuranReaderPage() {
       },
       onError: () => setPlaying(false),
     });
+  }
+
+  /** Continuous surah playback: onEnded → next ayah auto-play */
+  function playSurahContinuous(fromAyah = 1) {
+    continuousRef.current = true;
+    setContinuous(true);
+    const start = Math.max(1, Math.min(surah.ayahCount, fromAyah));
+
+    const playAt = (ayah: number) => {
+      if (!continuousRef.current) return;
+      setAyahNum(ayah);
+      setPlaying(true);
+      const url = ayahAudioUrl(qariId, surahNum, ayah);
+      playGlobalAudio(url, {
+        onEnded: () => {
+          if (!continuousRef.current) return;
+          if (ayah < surah.ayahCount) {
+            playAt(ayah + 1);
+          } else {
+            continuousRef.current = false;
+            setContinuous(false);
+            setPlaying(false);
+          }
+        },
+        onError: () => {
+          continuousRef.current = false;
+          setContinuous(false);
+          setPlaying(false);
+        },
+      });
+    };
+
+    playAt(start);
   }
 
   function goSurah(n: number) {
@@ -289,14 +328,37 @@ export default function QuranReaderPage() {
                 <Button
                   variant="premium"
                   size="sm"
-                  onClick={() => (playing ? stopAudio() : playCurrent())}
+                  onClick={() =>
+                    playing && !continuous ? stopAudio() : playCurrent()
+                  }
                 >
-                  {playing ? (
+                  {playing && !continuous ? (
                     <Pause className="h-4 w-4" />
                   ) : (
                     <Play className="h-4 w-4" />
                   )}
-                  {playing ? "إيقاف" : "استمع للآية"}
+                  {playing && !continuous ? "إيقاف" : "استمع للآية"}
+                </Button>
+                <Button
+                  variant={continuous ? "premium" : "outline"}
+                  size="sm"
+                  className="gap-1"
+                  onClick={() => {
+                    if (continuous && playing) {
+                      stopAudio();
+                      return;
+                    }
+                    playSurahContinuous(ayahNum || 1);
+                  }}
+                >
+                  {continuous && playing ? (
+                    <Pause className="h-4 w-4" />
+                  ) : (
+                    <Play className="h-4 w-4" />
+                  )}
+                  {continuous && playing
+                    ? "إيقاف المتصل"
+                    : "استمع للسورة كاملة"}
                 </Button>
                 <Button
                   variant={repeat ? "soft" : "outline"}

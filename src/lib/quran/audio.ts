@@ -1,11 +1,13 @@
 import type { Qari } from "./types";
 
 /**
- * Reciter library — only reciters with full 114-surah everyayah.com libraries.
- * URL: https://everyayah.com/data/{folder}/{SSS}{AAA}.mp3
- * Portraits: /public/qaris/{id}.jpg (real photos, circular in UI)
+ * Reciter library — full 114-surah everyayah packs only.
+ *
+ * Grid is 2 columns RTL: array[0]=top-right, [1]=top-left, [2]=row2-right…
+ * Order below is intentional for the Qaris page layout.
  */
 export const QARIS: Qari[] = [
+  // ── Ordered top 10 (RTL 2-col grid) ───────────────────────────────────
   {
     id: "alafasy",
     nameAr: "مشاري راشد العفاسي",
@@ -17,14 +19,34 @@ export const QARIS: Qari[] = [
     bioAr: "قارئ كويتي معروف بصوته الهادئ وترتيبه الواضح — مناسب للحفظ.",
   },
   {
-    id: "sudais",
-    nameAr: "عبد الرحمن السديس",
-    nameEn: "Abdurrahman As-Sudais",
-    image: "/qaris/sudais.jpg",
-    everyAyahFolder: "Abdurrahmaan_As-Sudais_192kbps",
+    id: "minshawi",
+    nameAr: "محمد صديق المنشاوي",
+    nameEn: "Al-Minshawi",
+    image: "/qaris/minshawi.jpg",
+    everyAyahFolder: "Minshawy_Murattal_128kbps",
     style: "مرتل",
-    bitrate: "192",
-    bioAr: "إمام المسجد الحرام — تلاوة مؤثرة شائعة في العالم الإسلامي.",
+    bitrate: "128",
+    bioAr: "من أشهر قرّاء مصر — ترتيل واضح.",
+  },
+  {
+    id: "husary",
+    nameAr: "محمود خليل الحصري",
+    nameEn: "Mahmoud Al-Husary",
+    image: "/qaris/husary.jpg",
+    everyAyahFolder: "Husary_128kbps",
+    style: "مرتل",
+    bitrate: "128",
+    bioAr: "مرجع كلاسيكي في الترتيل — ممتاز للمبتدئين والتعلّم.",
+  },
+  {
+    id: "dosari",
+    nameAr: "ياسر الدوسري",
+    nameEn: "Yasser Al-Dosari",
+    image: "/qaris/dosari.jpg",
+    everyAyahFolder: "Yasser_Ad-Dussary_128kbps",
+    style: "مرتل",
+    bitrate: "128",
+    bioAr: "إمام المسجد الحرام — صوت مؤثر.",
   },
   {
     id: "maher",
@@ -35,6 +57,68 @@ export const QARIS: Qari[] = [
     style: "مرتل",
     bitrate: "128",
     bioAr: "إمام المسجد الحرام — صوت عذب ومناسب للاستماع المتكرر.",
+  },
+  {
+    id: "abdulbasit",
+    nameAr: "عبد الباسط عبد الصمد",
+    nameEn: "Abdul Basit",
+    image: "/qaris/abdulbasit.jpg",
+    everyAyahFolder: "Abdul_Basit_Murattal_192kbps",
+    style: "مرتل",
+    bitrate: "192",
+    bioAr: "صوت عالمي خالد — ترتيل هادئ للحفظ.",
+  },
+  {
+    id: "ali_jaber",
+    nameAr: "علي جابر",
+    nameEn: "Ali Jaber",
+    image: "/qaris/ali_jaber.jpg",
+    everyAyahFolder: "Ali_Jaber_64kbps",
+    style: "مرتل",
+    bitrate: "64",
+    bioAr:
+      "الشيخ علي عبد الله جابر — إمام سابق للمسجد الحرام · تسجيل كامل ١١٤ سورة.",
+  },
+  {
+    id: "qatami",
+    nameAr: "ناصر القطامي",
+    nameEn: "Nasser Al-Qatami",
+    image: "/qaris/qatami.webp",
+    everyAyahFolder: "Nasser_Alqatami_128kbps",
+    style: "مرتل",
+    bitrate: "128",
+    bioAr: "قارئ سعودي بأداء عصري مؤثر — شائع بين الشباب.",
+  },
+  {
+    id: "ghamadi",
+    nameAr: "سعد الغامدي",
+    nameEn: "Saad Al-Ghamadi",
+    image: "/qaris/ghamadi.jpg",
+    everyAyahFolder: "Ghamadi_40kbps",
+    style: "مرتل",
+    bitrate: "40",
+    bioAr: "من أكثر الأصوات استماعاً في العالم العربي.",
+  },
+  {
+    id: "neana",
+    nameAr: "أحمد نعينع",
+    nameEn: "Ahmed Neana",
+    image: "/qaris/neana.jpg",
+    everyAyahFolder: "Ahmed_Neana_128kbps",
+    style: "مرتل",
+    bitrate: "128",
+    bioAr: "قارئ مصري بصوت هادئ واضح — مناسب للحفظ والتكرار.",
+  },
+  // ── Remaining 9 (any order after top 10) ──────────────────────────────
+  {
+    id: "sudais",
+    nameAr: "عبد الرحمن السديس",
+    nameEn: "Abdurrahman As-Sudais",
+    image: "/qaris/sudais.jpg",
+    everyAyahFolder: "Abdurrahmaan_As-Sudais_192kbps",
+    style: "مرتل",
+    bitrate: "192",
+    bioAr: "إمام المسجد الحرام — تلاوة مؤثرة شائعة في العالم الإسلامي.",
   },
   {
     id: "ajamy",
@@ -55,36 +139,6 @@ export const QARIS: Qari[] = [
     style: "مرتل",
     bitrate: "128",
     bioAr: "إمام المسجد الحرام — تلاوة رصينة.",
-  },
-  {
-    id: "husary",
-    nameAr: "محمود خليل الحصري",
-    nameEn: "Mahmoud Al-Husary",
-    image: "/qaris/husary.jpg",
-    everyAyahFolder: "Husary_128kbps",
-    style: "مرتل",
-    bitrate: "128",
-    bioAr: "مرجع كلاسيكي في الترتيل — ممتاز للمبتدئين والتعلّم.",
-  },
-  {
-    id: "minshawi",
-    nameAr: "محمد صديق المنشاوي",
-    nameEn: "Al-Minshawi",
-    image: "/qaris/minshawi.jpg",
-    everyAyahFolder: "Minshawy_Murattal_128kbps",
-    style: "مرتل",
-    bitrate: "128",
-    bioAr: "من أشهر قرّاء مصر — ترتيل واضح.",
-  },
-  {
-    id: "abdulbasit",
-    nameAr: "عبد الباسط عبد الصمد",
-    nameEn: "Abdul Basit",
-    image: "/qaris/abdulbasit.jpg",
-    everyAyahFolder: "Abdul_Basit_Murattal_192kbps",
-    style: "مرتل",
-    bitrate: "192",
-    bioAr: "صوت عالمي خالد — ترتيل هادئ للحفظ.",
   },
   {
     id: "ayyoub",
@@ -117,26 +171,6 @@ export const QARIS: Qari[] = [
     bioAr: "إمام المسجد النبوي — ترتيل واضح للمراجعة.",
   },
   {
-    id: "ghamadi",
-    nameAr: "سعد الغامدي",
-    nameEn: "Saad Al-Ghamadi",
-    image: "/qaris/ghamadi.jpg",
-    everyAyahFolder: "Ghamadi_40kbps",
-    style: "مرتل",
-    bitrate: "40",
-    bioAr: "من أكثر الأصوات استماعاً في العالم العربي.",
-  },
-  {
-    id: "dosari",
-    nameAr: "ياسر الدوسري",
-    nameEn: "Yasser Al-Dosari",
-    image: "/qaris/dosari.jpg",
-    everyAyahFolder: "Yasser_Ad-Dussary_128kbps",
-    style: "مرتل",
-    bitrate: "128",
-    bioAr: "إمام المسجد الحرام — صوت مؤثر.",
-  },
-  {
     id: "basfar",
     nameAr: "عبد الله بصفر",
     nameEn: "Abdullah Basfar",
@@ -157,46 +191,6 @@ export const QARIS: Qari[] = [
     bioAr: "قارئ مصري معروف بأداء خاشع.",
   },
   {
-    id: "neana",
-    nameAr: "أحمد نعينع",
-    nameEn: "Ahmed Neana",
-    image: "/qaris/neana.jpg",
-    everyAyahFolder: "Ahmed_Neana_128kbps",
-    style: "مرتل",
-    bitrate: "128",
-    bioAr: "قارئ مصري بصوت هادئ واضح — مناسب للحفظ والتكرار.",
-  },
-  // Omitted incomplete packs (see INCOMPLETE_QARI_IDS + QARI_CDN_AUDIT):
-  // - Mustafa Ismail — everyayah ~4220 missing
-  // - Hazza Al Balushi — no reliable complete pack on app CDNs
-  // Islam Sobhi: added via mp3quran surah-level (109/114) — missing → Alafasy verse.
-  {
-    id: "islam_sobhi",
-    nameAr: "إسلام صبحي",
-    nameEn: "Islam Sobhi",
-    image: "/qaris/default-portrait.jpg",
-    everyAyahFolder: "surah", // not everyayah — see surahBaseUrl
-    style: "مرتل",
-    bitrate: "128",
-    bioAr:
-      "قارئ مصري معاصر بصوت خاشع — تسجيل سورة-بسورة (mp3quran · ١٠٩ سورة). السور الناقصة تُكمَّل بالعفاسي.",
-    playbackMode: "surah",
-    surahBaseUrl:
-      "https://server14.mp3quran.net/islam/Rewayat-Hafs-A-n-Assem/",
-    // mp3quran surah_list omits: 37, 39, 40, 45, 65
-    missingSurahs: [37, 39, 40, 45, 65],
-  },
-  {
-    id: "qatami",
-    nameAr: "ناصر القطامي",
-    nameEn: "Nasser Al-Qatami",
-    image: "/qaris/qatami.webp",
-    everyAyahFolder: "Nasser_Alqatami_128kbps",
-    style: "مرتل",
-    bitrate: "128",
-    bioAr: "قارئ سعودي بأداء عصري مؤثر — شائع بين الشباب.",
-  },
-  {
     id: "fares_abbad",
     nameAr: "فارس عباد",
     nameEn: "Fares Abbad",
@@ -206,29 +200,17 @@ export const QARIS: Qari[] = [
     bitrate: "64",
     bioAr: "قارئ يمني — صوت عذب مناسب للاستماع الطويل.",
   },
-  {
-    id: "ali_jaber",
-    nameAr: "علي جابر",
-    nameEn: "Ali Jaber",
-    /** Local verified portrait (Wikimedia face photo) — other qaris untouched */
-    image: "/qaris/ali_jaber.jpg",
-    everyAyahFolder: "Ali_Jaber_64kbps",
-    style: "مرتل",
-    bitrate: "64",
-    bioAr:
-      "الشيخ علي عبد الله جابر — إمام سابق للمسجد الحرام · تسجيل كامل ١١٤ سورة.",
-  },
 ];
 
 /**
  * Qari ids that must never appear in UI / playback preference.
- * - mustafa_ismail: everyayah incomplete (~4220 missing files)
- * - hazza_al_balushi: no reliable complete pack on app CDNs
- * Islam Sobhi is available (surah-mode mp3quran) — not in this set.
+ * - islam_sobhi: removed from product library (surah-mode partial pack)
+ * - mustafa_ismail / hazza: incomplete CDN packs
  */
 export const INCOMPLETE_QARI_IDS = new Set([
   "mustafa_ismail",
   "hazza_al_balushi",
+  "islam_sobhi",
 ]);
 
 /** Audit notes for procurement decisions (AI collaborators / product). */
@@ -245,15 +227,14 @@ export const QARI_CDN_AUDIT: Record<
     complete114: false,
     source:
       "https://server14.mp3quran.net/islam/Rewayat-Hafs-A-n-Assem/ (109 surahs)",
-    note:
-      "Added as surah-level pack (not verse-by-verse). Missing surahs 37,39,40,45,65 fall back to Alafasy verse URLs. Scoped sessions still work; play-all reuses same surah file.",
+    note: "Removed from UI library — partial surah pack; excluded via INCOMPLETE_QARI_IDS.",
   },
   hazza_al_balushi: {
     complete114: false,
     source:
       "everyayah.com (absent) / mp3quran.net/eng/hazza (surah-level) / way2quran ~98 surahs",
     note:
-      "Hazza Al Balushi (هزاع البلوشي): no complete 114-surah verse-by-verse pack on everyayah CDN. Third-party hosts are surah-level or partial (~98). Excluded from getAvailableQaris() until a full V2V pack exists. Playback falls back to Alafasy on 404.",
+      "Hazza Al Balushi: no complete 114-surah V2V pack. Excluded from getAvailableQaris().",
   },
 };
 
@@ -261,19 +242,25 @@ export function getQari(id: string): Qari | undefined {
   return QARIS.find((q) => q.id === id);
 }
 
-/** Reciters offered in UI (excludes known broken packs). */
+/** Reciters offered in UI (excludes known broken / removed packs). */
 export function getAvailableQaris(): Qari[] {
   return QARIS.filter((q) => !INCOMPLETE_QARI_IDS.has(q.id));
 }
 
 /**
  * Resolve a preferred qari id to a playable one.
- * Falls back to Alafasy if the saved preference was removed (e.g. incomplete pack).
+ * Falls back to Alafasy if the saved preference was removed.
  */
 export function resolvePlayableQariId(preferredId?: string | null): string {
-  if (preferredId && getQari(preferredId) && !INCOMPLETE_QARI_IDS.has(preferredId)) {
+  if (
+    preferredId &&
+    getQari(preferredId) &&
+    !INCOMPLETE_QARI_IDS.has(preferredId)
+  ) {
     return preferredId;
   }
+  // Legacy preference for removed Islam Sobhi
+  if (preferredId === "islam_sobhi") return "alafasy";
   return "alafasy";
 }
 
@@ -288,9 +275,7 @@ function everyayahVerseUrl(
 }
 
 /**
- * Audio URL for a reciter + ayah.
- * - verse mode (default): everyayah V2V
- * - surah mode (Islam Sobhi…): full-surah file; missing surahs → Alafasy verse
+ * Audio URL for a reciter + ayah (verse-by-verse everyayah).
  */
 export function ayahAudioUrl(
   qari: Qari | string,
@@ -310,6 +295,7 @@ export function ayahAudioUrl(
     return everyayahVerseUrl("Alafasy_128kbps", surahNumber, ayahNumber);
   }
 
+  // Legacy surah-mode path (no longer in active library)
   if (q.playbackMode === "surah" && q.surahBaseUrl) {
     const missing = q.missingSurahs || [];
     if (missing.includes(surahNumber)) {
@@ -328,18 +314,13 @@ export function ayahAudioUrl(
 
 /**
  * Authentic voice preview for the Qari library.
- * Surah-mode: full Al-Fatiha file. Verse-mode: Fatiha ayah 2 (avoids shared basmalah).
+ * Fatiha ayah 2 (avoids shared basmalah samples).
  */
 export function qariPreviewAudioUrl(qari: Qari | string): string {
-  const q = typeof qari === "string" ? getQari(resolvePlayableQariId(qari)) : qari;
+  const q =
+    typeof qari === "string" ? getQari(resolvePlayableQariId(qari)) : qari;
   if (q?.playbackMode === "surah") {
     return ayahAudioUrl(qari, 1, 1);
   }
   return ayahAudioUrl(qari, 1, 2);
-}
-
-export function qariImageUrl(qari: Qari | string): string {
-  const q = typeof qari === "string" ? getQari(qari) : qari;
-  if (!q) return "/qaris/placeholder.svg";
-  return q.image || `/qaris/${q.id}.jpg`;
 }

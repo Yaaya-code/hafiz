@@ -229,13 +229,19 @@ function TalqeenInner() {
       {
         onInterim: (t) => {
           if (!wordStream.length) return;
-          const r = matchLive(wordStream, t, { interim: true });
+          const r = matchLive(wordStream, t, {
+            interim: true,
+            streaming: true,
+          });
           setLiveWords(r.display);
           setAccuracy(r.stats.accuracy);
         },
         onFinal: (t) => {
           if (!wordStream.length) return;
-          const r = matchLive(wordStream, t, { interim: true });
+          const r = matchLive(wordStream, t, {
+            interim: true,
+            streaming: true,
+          });
           setLiveWords(r.display);
           setAccuracy(r.stats.accuracy);
         },
@@ -276,7 +282,10 @@ function TalqeenInner() {
       return;
     }
     // Final soft score — incomplete is not catastrophic fail
-    const r = matchLive(wordStream, text, { interim: false });
+    const r = matchLive(wordStream, text, {
+      interim: false,
+      streaming: true,
+    });
     setLiveWords(r.display);
     setAccuracy(r.stats.accuracy);
     const ok =

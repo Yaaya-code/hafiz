@@ -38,7 +38,8 @@ import {
   recordQuizResult,
 } from "@/lib/user-activity";
 
-type Phase = "select" | "range" | "play" | "result";
+type Phase = "hub" | "select" | "range" | "play" | "result";
+type QuizCategory = "hifz" | "meanings" | "religious" | null;
 
 const TIER_LABEL: Record<QuizMode["tier"], string> = {
   easy: "سهل",
@@ -48,7 +49,8 @@ const TIER_LABEL: Record<QuizMode["tier"], string> = {
 };
 
 export default function QuizPage() {
-  const [phase, setPhase] = useState<Phase>("select");
+  const [phase, setPhase] = useState<Phase>("hub");
+  const [category, setCategory] = useState<QuizCategory>(null);
   const [mode, setMode] = useState<QuizMode | null>(null);
   const [questions, setQuestions] = useState<QuizQuestion[]>([]);
   const [qIndex, setQIndex] = useState(0);
@@ -62,6 +64,20 @@ export default function QuizPage() {
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const [reorderPicks, setReorderPicks] = useState<string[]>([]);
   const [timedOut, setTimedOut] = useState(false);
+
+  function exitQuiz() {
+    setPhase("hub");
+    setCategory(null);
+    setMode(null);
+    setQuestions([]);
+    setQIndex(0);
+    setScore(0);
+    setSelected(null);
+    setAnswered(false);
+    setReorderPicks([]);
+    setTimedOut(false);
+    setTimeLeft(null);
+  }
 
   const loadSnapshot = useCallback((): LearningSnapshot | null => {
     try {
@@ -231,12 +247,15 @@ export default function QuizPage() {
         <p className="text-sm text-muted-foreground mt-1">
           {formatArabicNumber(pct)}%
         </p>
-        <div className="mt-8 flex gap-3 justify-center">
+        <div className="mt-8 flex gap-3 justify-center flex-wrap">
           <Button variant="premium" onClick={() => start(mode)}>
             إعادة
           </Button>
           <Button variant="outline" onClick={() => setPhase("select")}>
             أنواع أخرى
+          </Button>
+          <Button variant="ghost" onClick={exitQuiz}>
+            خروج / رجوع
           </Button>
         </div>
       </div>
@@ -248,30 +267,40 @@ export default function QuizPage() {
     return (
       <div className="mx-auto max-w-6xl xl:max-w-7xl space-y-6">
         <div className="flex items-center justify-between flex-wrap gap-2">
-          <div>
-            <h1 className="text-xl font-bold">{mode.title}</h1>
-            <p className="text-sm text-muted-foreground">
-              سؤال {formatArabicNumber(qIndex + 1)} من{" "}
-              {formatArabicNumber(total)}
-              {q.meta?.source ? (
-                <span className="ms-2 text-[11px] opacity-70">
-                  · مصدر:{" "}
-                  {q.meta.source === "memory"
-                    ? "ذاكرة"
-                    : q.meta.source === "mistake"
-                      ? "خطأ"
-                      : q.meta.source === "progress"
-                        ? "تقدم"
-                        : q.meta.source === "mutashabih"
-                          ? "متشابه"
-                          : q.meta.source === "scoped"
-                            ? "نطاق"
-                            : q.meta.source === "edge"
-                              ? "أوائل/أواخر"
-                              : "تأسيس"}
-                </span>
-              ) : null}
-            </p>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={exitQuiz}
+            >
+              خروج / رجوع
+            </Button>
+            <div>
+              <h1 className="text-xl font-bold">{mode.title}</h1>
+              <p className="text-sm text-muted-foreground">
+                سؤال {formatArabicNumber(qIndex + 1)} من{" "}
+                {formatArabicNumber(total)}
+                {q.meta?.source ? (
+                  <span className="ms-2 text-[11px] opacity-70">
+                    · مصدر:{" "}
+                    {q.meta.source === "memory"
+                      ? "ذاكرة"
+                      : q.meta.source === "mistake"
+                        ? "خطأ"
+                        : q.meta.source === "progress"
+                          ? "تقدم"
+                          : q.meta.source === "mutashabih"
+                            ? "متشابه"
+                            : q.meta.source === "scoped"
+                              ? "نطاق"
+                              : q.meta.source === "edge"
+                                ? "أوائل/أواخر"
+                                : "تأسيس"}
+                  </span>
+                ) : null}
+              </p>
+            </div>
           </div>
           <div className="flex items-center gap-2">
             {timeLeft !== null && q.timeLimitSec && (
@@ -472,13 +501,130 @@ export default function QuizPage() {
     );
   }
 
+  // ── Hub: pick surah shell + quiz category (no heavy hardcoded banks) ──
+  if (phase === "hub") {
+    return (
+      <div className="mx-auto max-w-2xl space-y-6">
+        <PageHeader
+          title="الاختبارات"
+          description="اختر السورة ونوع الاختبار — بنك الأسئلة يُربط لاحقاً دون تحميل بيانات ١١٤ سورة الآن"
+          backHref="/dashboard"
+        />
+
+        <Card className="border-[#D4AF37]/25">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">١ · تحديد السورة</CardTitle>
+            <CardDescription>
+              قائمة السور خفيفة (أسماء فقط) — المحتوى يأتي من قاعدة الاختبارات لاحقاً
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <select
+              className="flex h-11 w-full rounded-xl border bg-background px-3 text-sm"
+              value={customSurah}
+              onChange={(e) => setCustomSurah(Number(e.target.value))}
+            >
+              {SURAHS.map((s) => (
+                <option key={s.number} value={s.number}>
+                  {formatArabicNumber(s.number)}. {s.nameAr}
+                </option>
+              ))}
+            </select>
+          </CardContent>
+        </Card>
+
+        <Card className="border-[#D4AF37]/25">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">٢ · نوع الاختبار</CardTitle>
+            <CardDescription>
+              هيكل واجهة فقط — المحرك جاهز للربط بقاعدة البيانات
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-3 sm:grid-cols-3">
+            {(
+              [
+                {
+                  id: "hifz" as const,
+                  title: "حفظ",
+                  desc: "تسميع واختبار آيات",
+                  icon: "📖",
+                },
+                {
+                  id: "meanings" as const,
+                  title: "معاني آيات",
+                  desc: "فهم المعاني والسياق",
+                  icon: "💡",
+                },
+                {
+                  id: "religious" as const,
+                  title: "أسئلة دينية",
+                  desc: "معرفة عامة مرتبطة بالسورة",
+                  icon: "🕌",
+                },
+              ] as const
+            ).map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => {
+                  setCategory(c.id);
+                  setPhase("select");
+                }}
+                className={cn(
+                  "rounded-2xl border p-4 text-start transition-all touch-manipulation",
+                  "hover:border-[#D4AF37]/50 hover:bg-[#D4AF37]/5",
+                  category === c.id && "border-[#D4AF37] bg-[#D4AF37]/10"
+                )}
+              >
+                <div className="text-2xl mb-2">{c.icon}</div>
+                <p className="font-semibold text-sm">{c.title}</p>
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  {c.desc}
+                </p>
+              </button>
+            ))}
+          </CardContent>
+        </Card>
+
+        <p className="text-center text-xs text-muted-foreground">
+          {poolHint}
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto max-w-6xl min-w-0 space-y-6 sm:space-y-8">
       <PageHeader
-        title="نظام الاختبارات التفاعلي"
-        description={"محرك معاير متعدد المسارات — " + poolHint}
-        backHref="/dashboard"
+        title={
+          category === "meanings"
+            ? "اختبار معاني"
+            : category === "religious"
+              ? "أسئلة دينية"
+              : "اختبار حفظ"
+        }
+        description={
+          "سورة " +
+          (SURAHS.find((s) => s.number === customSurah)?.nameAr || "") +
+          " — " +
+          poolHint
+        }
+        backHref="/quiz"
       />
+      <div className="flex justify-start">
+        <Button type="button" variant="outline" size="sm" onClick={exitQuiz}>
+          خروج / رجوع
+        </Button>
+      </div>
+      {category !== "hifz" && category !== null && (
+        <Card className="border-dashed border-[#D4AF37]/30">
+          <CardContent className="p-5 text-sm text-muted-foreground leading-relaxed">
+            واجهة «{category === "meanings" ? "معاني الآيات" : "الأسئلة الدينية"}»
+            جاهزة. بنك الأسئلة سيُربط بقاعدة البيانات لاحقاً — يمكنك استخدام
+            مسارات الحفظ التفاعلية أدناه كمحرك مؤقت.
+          </CardContent>
+        </Card>
+      )}
       {(["easy", "fun", "tactical", "hard"] as const).map((tier) => {
         const list = modesByTier[tier];
         if (!list.length) return null;

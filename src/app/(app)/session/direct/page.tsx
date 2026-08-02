@@ -122,22 +122,40 @@ function DirectSessionInner() {
       setLastCompleted(result.lastCompletedAyah);
       if (result.stats.lastMessage) setHint(result.stats.lastMessage);
 
-      // Full range completed
+      // Full range completed — soft complete (no auto-fail path)
       if (
         result.display.length > 0 &&
-        result.display.every((w) => w.status === "correct")
+        result.display.every((w) => w.status === "correct") &&
+        phaseRef.current === "listening"
       ) {
-        if (phaseRef.current === "listening") {
-          try {
-            speechRef.current?.stop();
-          } catch {
-            /* ignore */
-          }
-          finishRange(result.lastCompletedAyah, result.stats.accuracy);
+        try {
+          speechRef.current?.stop();
+        } catch {
+          /* ignore */
         }
+        setPhase("done");
+        setReport(
+          finalFeedbackAr(
+            result.stats,
+            result.lastCompletedAyah,
+            toAyah
+          )
+        );
+        saveSurahRecitationProgress({
+          surahNumber,
+          lastCompletedAyah: result.lastCompletedAyah,
+          continueFromAyah: Math.min(
+            toAyah,
+            result.lastCompletedAyah + 1 || fromAyah
+          ),
+          totalAyahs: toAyah,
+          lastSessionAt: new Date().toISOString(),
+          accuracy: result.stats.accuracy,
+          mistakesCount: result.stats.incorrect,
+        });
       }
     },
-    [wordStream]
+    [wordStream, toAyah, surahNumber, fromAyah]
   );
 
   const killSpeech = useCallback(() => {

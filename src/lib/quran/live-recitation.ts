@@ -115,9 +115,6 @@ export function matchLive(
 
   let oi = 0;
   let si = 0;
-  let matched = 0;
-  let missing = 0;
-  let incorrect = 0;
   let extra = 0;
   let repeated = 0;
   let lastMessage: string | undefined;
@@ -130,7 +127,6 @@ export function matchLive(
       if (status[k] === "correct") continue;
       status[k] = "incorrect";
       notes[k] = "تم تخطّي «" + flat[k].text + "»";
-      incorrect++;
       lastMessage = notes[k];
       revealMax = Math.max(revealMax, k);
     }
@@ -154,7 +150,6 @@ export function matchLive(
     // 1) Exact match → green immediately
     if (wordsMatch(exp, sWord) && !isPartialWord(exp, sWord)) {
       status[oi] = "correct";
-      matched++;
       revealMax = Math.max(revealMax, oi);
       prevSpoken = sWord;
       oi++;
@@ -176,7 +171,6 @@ export function matchLive(
       const merged = spoken.slice(si, si + take).join("");
       if (wordsMatch(exp, merged) && !isPartialWord(exp, merged)) {
         status[oi] = "correct";
-        matched++;
         revealMax = Math.max(revealMax, oi);
         prevSpoken = merged;
         oi++;
@@ -217,7 +211,6 @@ export function matchLive(
         markSkipped(oi, foundLater);
         if (wordsMatch(flat[foundLater].norm, sWord)) {
           status[foundLater] = "correct";
-          matched++;
           revealMax = Math.max(revealMax, foundLater);
           oi = foundLater + 1;
         } else {
@@ -271,7 +264,6 @@ export function matchLive(
     status[oi] = "incorrect";
     notes[oi] =
       "المتوقع «" + flat[oi].text + "» · سمعت «" + sWord + "»";
-    incorrect++;
     lastMessage = notes[oi];
     revealMax = Math.max(revealMax, oi);
     prevSpoken = sWord;
@@ -371,7 +363,7 @@ export function matchLive(
     display,
     stats: {
       matched: correctCount,
-      missing,
+      missing: 0,
       incorrect: errorCount,
       extra: finalExtra,
       repeated,

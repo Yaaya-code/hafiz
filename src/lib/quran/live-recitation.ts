@@ -98,15 +98,9 @@ export function wordsMatchStrict(expected: string, spoken: string): boolean {
   const e2 = e.replace(/ا/g, "");
   const s2 = s.replace(/ا/g, "");
   if (e2.length >= 3 && e2 === s2) return true;
-  // Very tight fuzzy: max 1 edit for short, 15% for longer
+  // Very tight fuzzy via wordsMatch + length ratio guard
   if (e.length <= 2) return e === s;
-  const maxLen = Math.max(e.length, s.length);
-  const dist = (() => {
-    // reuse wordsMatch only when clearly close
-    return wordsMatch(e, s);
-  })();
-  if (!dist) return false;
-  // wordsMatch already true — require length ratio not too wild
+  if (!wordsMatch(e, s)) return false;
   if (Math.abs(e.length - s.length) > Math.max(2, Math.floor(e.length * 0.25))) {
     return false;
   }

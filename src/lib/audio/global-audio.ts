@@ -259,8 +259,6 @@ export function playContinuousPlaylist(
     return { stop };
   }
 
-  let index = 0;
-
   const playIndex = (i: number) => {
     if (gen !== playlistGen) return;
     if (i < 0 || i >= urls.length) {
@@ -269,7 +267,6 @@ export function playContinuousPlaylist(
       emitStop();
       return;
     }
-    index = i;
     opts.onIndex?.(i);
 
     const url = urls[i];

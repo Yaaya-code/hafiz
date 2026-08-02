@@ -8,26 +8,44 @@ import {
   Headphones,
   Mic,
   AlertTriangle,
-  MoreHorizontal,
+  GraduationCap,
+  BookText,
+  Sparkles,
+  ClipboardCheck,
+  BarChart3,
+  Trophy,
+  Target,
+  Sprout,
+  BookOpen,
+  Brain,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ACTIVE_GOLD, ICON_BOUNCE, SHINE_GOLD_TEXT } from "@/lib/ui-active";
 
-/** Simplified primary nav — Phase A simple UX */
+/** Primary: simple start modes + home */
 const primaryNav = [
   { href: "/dashboard", label: "الرئيسية", icon: Home },
-  { href: "/dashboard#direct", label: "تسميع مباشر", icon: Mic },
-  { href: "/dashboard#talqeen", label: "تلقين", icon: Headphones },
-  { href: "/mistakes", label: "الأخطاء", icon: AlertTriangle },
+  { href: "/session/direct", label: "تسميع مباشر", icon: Mic },
+  { href: "/session/talqeen", label: "تلقين", icon: Headphones },
+  { href: "/plans/journey", label: "خطة يومية", icon: GraduationCap },
 ];
 
-const otherNav = [
+/** Full product features — never hide tools from the user */
+const toolsNav = [
+  { href: "/quran", label: "القرآن", icon: BookText },
+  { href: "/plans/new", label: "ورد الحفظ", icon: Sprout },
+  { href: "/plans/revision", label: "ورد المراجعة", icon: BookOpen },
+  { href: "/mutashabihat", label: "المتشابهات", icon: Sparkles },
+  { href: "/mistakes", label: "الأخطاء", icon: AlertTriangle },
+  { href: "/quiz", label: "الاختبارات", icon: ClipboardCheck },
+  { href: "/qaris", label: "القرّاء", icon: Headphones },
+  { href: "/stats", label: "الإحصائيات", icon: BarChart3 },
+  { href: "/achievements", label: "الإنجازات", icon: Trophy },
+  { href: "/goals", label: "الأهداف", icon: Target },
+];
+
+const accountNav = [
   { href: "/settings", label: "الإعدادات", icon: Settings },
-  {
-    href: "/plans/journey",
-    label: "المزيد (رحلة اليوم)",
-    icon: MoreHorizontal,
-  },
 ];
 
 function NavLink({
@@ -74,6 +92,11 @@ function NavLink({
   );
 }
 
+function isActivePath(pathname: string, href: string) {
+  if (href === "/dashboard") return pathname === "/dashboard";
+  return pathname === href || pathname.startsWith(href + "/");
+}
+
 export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
 
@@ -90,7 +113,7 @@ export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
         />
         <div>
           <p className="font-bold text-lg leading-none text-white">حافظ</p>
-          <p className="text-xs text-[#CBD5E1]/70 mt-1">تسميع وتلقين مبسّط</p>
+          <p className="text-xs text-[#CBD5E1]/70 mt-1">رفيق الحفظ والمراجعة</p>
         </div>
       </div>
 
@@ -100,23 +123,32 @@ export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
             ابدأ هنا
           </p>
           <ul className="space-y-1">
-            {primaryNav.map((item) => {
-              const isHome = item.href === "/dashboard";
-              const isActive = isHome
-                ? pathname === "/dashboard"
-                : !item.href.includes("#") &&
-                  (pathname === item.href ||
-                    pathname.startsWith(item.href + "/"));
-              return (
-                <li key={item.href + item.label}>
-                  <NavLink
-                    {...item}
-                    active={isActive}
-                    onNavigate={onNavigate}
-                  />
-                </li>
-              );
-            })}
+            {primaryNav.map((item) => (
+              <li key={item.href}>
+                <NavLink
+                  {...item}
+                  active={isActivePath(pathname, item.href)}
+                  onNavigate={onNavigate}
+                />
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <div>
+          <p className="mb-2 px-3 text-[11px] font-semibold text-[#CBD5E1]/50">
+            أدوات الحفظ
+          </p>
+          <ul className="space-y-1">
+            {toolsNav.map((item) => (
+              <li key={item.href}>
+                <NavLink
+                  {...item}
+                  active={isActivePath(pathname, item.href)}
+                  onNavigate={onNavigate}
+                />
+              </li>
+            ))}
           </ul>
         </div>
 
@@ -125,37 +157,44 @@ export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
             الحساب
           </p>
           <ul className="space-y-1">
-            {otherNav.map((item) => {
-              const active =
-                pathname === item.href ||
-                pathname.startsWith(item.href + "/");
-              return (
-                <li key={item.href}>
-                  <NavLink
-                    {...item}
-                    active={active}
-                    onNavigate={onNavigate}
-                  />
-                </li>
-              );
-            })}
+            {accountNav.map((item) => (
+              <li key={item.href}>
+                <NavLink
+                  {...item}
+                  active={isActivePath(pathname, item.href)}
+                  onNavigate={onNavigate}
+                />
+              </li>
+            ))}
           </ul>
         </div>
       </nav>
 
       <div className="border-t border-[#D4AF37]/10 p-4">
-        <div className="rounded-2xl border border-[#D4AF37]/15 bg-[#0A0F1A]/90 p-4 backdrop-blur-2xl">
-          <p className={cn("text-sm font-medium", SHINE_GOLD_TEXT)}>
+        <div
+          className={cn(
+            "group cursor-pointer rounded-2xl border border-[#D4AF37]/15 bg-[#0A0F1A]/90 p-4 backdrop-blur-2xl",
+            "transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)]",
+            "hover:-translate-y-1 hover:border-[#D4AF37]/40"
+          )}
+        >
+          <div
+            className={cn(
+              "relative z-[2] flex items-center gap-2 text-sm",
+              SHINE_GOLD_TEXT
+            )}
+          >
+            <Brain className={cn("h-4 w-4", ICON_BOUNCE)} />
             ابدأ فوراً
-          </p>
-          <p className="mt-2 text-xs text-[#CBD5E1]/70 leading-relaxed">
-            اختر سورة ونطاقاً من الرئيسية — تسميع أو تلقين.
+          </div>
+          <p className="relative z-[2] mt-2 text-xs text-[#CBD5E1]/70 leading-relaxed">
+            تسميع · تلقين · أو خطة يومية — كل الأدوات متاحة.
           </p>
           <Link
             href="/dashboard"
             onClick={onNavigate}
             className={cn(
-              "mt-3 inline-flex text-xs transition-all duration-300 hover:scale-105",
+              "relative z-[2] mt-3 inline-flex text-xs transition-all duration-300 hover:scale-105",
               SHINE_GOLD_TEXT
             )}
           >

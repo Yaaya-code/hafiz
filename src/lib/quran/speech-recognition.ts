@@ -220,7 +220,12 @@ export class ArabicSpeechSession {
    */
   start(
     handlers: SpeechHandlers = {},
-    opts?: { allowSoftResume?: boolean; holdStream?: MediaStream | null }
+    opts?: {
+      allowSoftResume?: boolean;
+      holdStream?: MediaStream | null;
+      /** Keep accumulated finalBuffer (continue after silence pause) */
+      preserveBuffer?: boolean;
+    }
   ): { ok: boolean; error?: string } {
     const cap = getSpeechCapability();
     if (!cap.supported) {
@@ -245,9 +250,10 @@ export class ArabicSpeechSession {
 
     this.destroyed = false;
     this.handlers = handlers;
-    // Preserve buffer only if resuming same object mid-session without hard clear
-    // Fresh start clears buffer:
-    this.finalBuffer = "";
+    // Fresh start clears buffer unless preserveBuffer (continue after mic silence)
+    if (!opts?.preserveBuffer) {
+      this.finalBuffer = "";
+    }
     this.pendingInterim = "";
     this.running = true;
     this.wantContinue = true;
@@ -325,6 +331,7 @@ export class ArabicSpeechSession {
       const live = mergeTranscript(this.finalBuffer, interim);
       if (!live) return;
 
+      // Fast interim so UI paints word-by-word with the voice (mobile + desktop)
       if (this.mobile) {
         this.pendingInterim = live;
         if (this.interimTimer) return;
@@ -333,7 +340,7 @@ export class ArabicSpeechSession {
           if (this.pendingInterim) {
             this.handlers.onInterim?.(this.pendingInterim);
           }
-        }, 100);
+        }, 40);
       } else {
         this.handlers.onInterim?.(live);
       }

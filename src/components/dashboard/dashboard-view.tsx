@@ -1,19 +1,20 @@
 "use client";
 
 /**
- * Simplified home hub (Phase A).
- * Two primary modes: direct recitation + listen-and-repeat (talqeen).
- * No journey orchestration, score charts, or forced plans.
+ * Home hub: two instant modes + optional daily plan banner.
+ * Full product tools remain reachable via sidebar.
  */
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  CalendarDays,
   Headphones,
   Mic,
   Settings,
   Sparkles,
+  ArrowLeft,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -54,7 +55,6 @@ export function DashboardView() {
   const [reps, setReps] = useState(3);
   const [mode, setMode] = useState<Mode>("direct");
 
-  // Bootstrap local + cloud profile with safe defaults (skip long onboarding)
   useEffect(() => {
     if (!ready) return;
     const readyProfile = ensureSimpleProfileReady({
@@ -70,10 +70,9 @@ export function DashboardView() {
     void bootstrapSimpleProfileAction({
       name: readyProfile.name || profile.name || undefined,
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once when ready
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
 
-  // Seed form from last manual wird / preferred qari
   useEffect(() => {
     if (!ready) return;
     if (profile.manualWird) {
@@ -86,7 +85,6 @@ export function DashboardView() {
     }
   }, [ready, profile.manualWird, profile.preferredQariId]);
 
-  // Deep-link support from sidebar: /dashboard#direct | #talqeen
   useEffect(() => {
     if (typeof window === "undefined") return;
     const hash = window.location.hash.replace("#", "");
@@ -110,7 +108,6 @@ export function DashboardView() {
     const wird = buildManualWird({ surah, fromAyah: from, toAyah: to });
     update((p) => ({
       ...profileWithManualWird(p, wird),
-      // Keep FREE_EXPLORER for simple UX (don't force EXTERNAL track noise)
       usageTrack:
         p.usageTrack === "AUTOMATIC_PLAN" ? p.usageTrack : "FREE_EXPLORER",
       preferredQariId: qariId || p.preferredQariId || "alafasy",
@@ -123,12 +120,11 @@ export function DashboardView() {
 
     if (mode === "direct") {
       router.push(
-        `/session/revision?step=simple_direct&mode=memorize&surah=${surah}&from=${from}&to=${to}`
+        `/session/direct?surah=${surah}&from=${from}&to=${to}`
       );
       return;
     }
 
-    // Talqeen interim: listen-memorize until dedicated /session/talqeen (Phase D)
     const params = new URLSearchParams({
       surah: String(surah),
       from: String(from),
@@ -136,7 +132,7 @@ export function DashboardView() {
       qari: qariId,
       reps: String(reps),
     });
-    router.push(`/listen-memorize?${params.toString()}`);
+    router.push(`/session/talqeen?${params.toString()}`);
   }
 
   if (!ready) {
@@ -162,10 +158,35 @@ export function DashboardView() {
             مرحباً{name && name !== "صديق القرآن" ? `، ${name}` : ""}
           </h1>
           <p className="text-sm text-muted-foreground leading-relaxed">
-            اختر الوضع، حدّد السورة والنطاق، وابدأ — بدون خطط معقّدة.
+            اختر الوضع، حدّد السورة والنطاق، وابدأ — أو التزم بخطة يومية إن
+            رغبت.
           </p>
         </header>
       </FadeIn>
+
+      {/* Daily plan banner — optional commitment path */}
+      <Link
+        href="/plans/journey"
+        className={cn(
+          "block rounded-2xl border border-[#D4AF37]/35 bg-gradient-to-l from-[#D4AF37]/15 via-[#D4AF37]/8 to-transparent p-4 sm:p-5",
+          "transition-all hover:border-[#D4AF37] hover:shadow-[0_0_28px_-10px_rgba(212,175,55,0.5)] touch-manipulation"
+        )}
+      >
+        <div className="flex items-start gap-3">
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-[#D4AF37]/20 text-[#D4AF37]">
+            <CalendarDays className="h-6 w-6" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className={cn("text-base font-bold", SHINE_GOLD_TEXT)}>
+              ابدأ خطة يومية
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground leading-relaxed">
+              ورد منظّم للمراجعة والحفظ — لمن يريد الالتزام بجدول يومي.
+            </p>
+          </div>
+          <ArrowLeft className="mt-1 h-5 w-5 shrink-0 text-[#D4AF37]" />
+        </div>
+      </Link>
 
       {/* Mode cards */}
       <div className="grid gap-3 sm:grid-cols-2">
@@ -184,7 +205,7 @@ export function DashboardView() {
           </div>
           <p className="font-semibold">تسميع مباشر</p>
           <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
-            اختر مقطعاً وسمّع آية بآية مع تقييم فوري.
+            كلمات تظهر مع صوتك لحظة بلحظة — آية بآية.
           </p>
           {mode === "direct" && (
             <Badge className="mt-3" variant="success">
@@ -208,7 +229,7 @@ export function DashboardView() {
           </div>
           <p className="font-semibold">تلقين</p>
           <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
-            اسمع الشيخ بعدد تكرار، ثم ردّد الآية.
+            اسمع الشيخ بعدد تكرار، ثم سمّع الآية.
           </p>
           {mode === "talqeen" && (
             <Badge className="mt-3" variant="success">
@@ -349,17 +370,37 @@ export function DashboardView() {
         </p>
       )}
 
-      <div className="flex justify-center">
+      <div className="flex flex-wrap justify-center gap-3 text-xs">
+        <Link
+          href="/quran"
+          className="text-muted-foreground hover:text-[#D4AF37] transition-colors"
+        >
+          القرآن
+        </Link>
+        <span className="text-border">·</span>
+        <Link
+          href="/mutashabihat"
+          className="text-muted-foreground hover:text-[#D4AF37] transition-colors"
+        >
+          المتشابهات
+        </Link>
+        <span className="text-border">·</span>
+        <Link
+          href="/quiz"
+          className="text-muted-foreground hover:text-[#D4AF37] transition-colors"
+        >
+          الاختبارات
+        </Link>
+        <span className="text-border">·</span>
         <Link
           href="/settings"
-          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-[#D4AF37] transition-colors"
+          className="inline-flex items-center gap-1 text-muted-foreground hover:text-[#D4AF37] transition-colors"
         >
           <Settings className="h-3.5 w-3.5" />
-          الإعدادات والمزيد
+          الإعدادات
         </Link>
       </div>
 
-      {/* Sticky bottom CTA — large touch target (mobile) */}
       <div className="fixed inset-x-0 bottom-0 z-30 border-t border-[#D4AF37]/20 bg-background/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur sm:hidden">
         <Button
           type="button"

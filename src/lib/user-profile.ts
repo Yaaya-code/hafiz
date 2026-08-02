@@ -155,6 +155,173 @@ export function getDefaultProfile(): HafizProfile {
   };
 }
 
+/** Minimal plan shell so stats / dashboard cards never see null plan fields */
+export function getSimplePlanShell(displayName?: string): StoredPlan {
+  const name = (displayName || "").trim();
+  return {
+    dailyNewPages: 1,
+    dailyRevisionPages: 3,
+    sessions: 2,
+    sessionLengthMinutes: 20,
+    revisionMinutes: 25,
+    newMinutes: 15,
+    memorizedUnits: 0,
+    estimatedDaysToFirstFullPass: 0,
+    strengthSummary: "متوسط — يحتاج انتظاماً",
+    styleSummary: "استخدام مبسّط",
+    goals: ["حفظ ومراجعة منتظمة"],
+    focus: ["تسميع مباشر", "تلقين (اسمع ثم ردّد)"],
+    scheduleHint: ["اختر سورة ونطاقاً وابدأ فوراً"],
+    welcomeMessage: {
+      greeting: name ? "مرحباً يا " + name : "مرحباً بك",
+      body: "ابدأ بالتسميع المباشر أو وضع التلقين — بدون خطط معقّدة.",
+      closing: "وفقك الله",
+    },
+    primaryGoal: "حفظ ومراجعة مبسّطة",
+    surahCount: 0,
+    dailyCards: {
+      revision: {
+        title: "تسميع مباشر",
+        detail: "اختر نطاقاً وسمّع آية بآية",
+        minutes: 20,
+      },
+      newHifz: {
+        title: "تلقين",
+        detail: "اسمع الشيخ ثم ردّد",
+        minutes: 20,
+      },
+      time: {
+        title: "وقت مرن",
+        detail: "حسب ما يناسبك",
+        minutes: 30,
+      },
+    },
+  };
+}
+
+/**
+ * Safe completed profile for the simplified UX path.
+ * Fills every field stats / profile screens may read so nothing is null.
+ */
+export function buildSimpleReadyProfile(
+  base?: Partial<HafizProfile> | HafizProfile
+): HafizProfile {
+  const now = new Date().toISOString();
+  const merged: HafizProfile = {
+    ...getDefaultProfile(),
+    ...base,
+    version: 2,
+  };
+  const name = (merged.name || base?.name || "").trim();
+  const strength = ([1, 2, 3, 4, 5] as const).includes(
+    merged.memorizationStrength as 1 | 2 | 3 | 4 | 5
+  )
+    ? (merged.memorizationStrength as 1 | 2 | 3 | 4 | 5)
+    : 3;
+
+  return normalizeProfile({
+    ...merged,
+    name,
+    completedAt: merged.completedAt || now,
+    onboardingComplete: true,
+    pagesPerDay:
+      typeof merged.pagesPerDay === "number" && merged.pagesPerDay >= 0
+        ? merged.pagesPerDay
+        : 1,
+    revisionPagesPerDay:
+      typeof merged.revisionPagesPerDay === "number"
+        ? merged.revisionPagesPerDay
+        : 3,
+    revisionSessionsPerDay:
+      typeof merged.revisionSessionsPerDay === "number" &&
+      merged.revisionSessionsPerDay > 0
+        ? merged.revisionSessionsPerDay
+        : 2,
+    dailyMinutes:
+      typeof merged.dailyMinutes === "number" && merged.dailyMinutes > 0
+        ? merged.dailyMinutes
+        : 30,
+    memorizationStrength: strength,
+    revisionStyle: merged.revisionStyle || "balanced",
+    goals:
+      Array.isArray(merged.goals) && merged.goals.length > 0
+        ? merged.goals
+        : ["حفظ ومراجعة منتظمة"],
+    preferredQariId: merged.preferredQariId || "alafasy",
+    learningStyle: merged.learningStyle || "LISTEN_AND_READ",
+    /** Simplified product path — no forced auto plan */
+    usageTrack: "FREE_EXPLORER",
+    hasActivePlan: false,
+    hifzStartPreference: merged.hifzStartPreference || "CONTINUE_FORWARD",
+    progressionMode: merged.progressionMode || "continue_forward",
+    learningGoalId: merged.learningGoalId || "complete_quran",
+    memorizationSelection: merged.memorizationSelection ?? {
+      mode: "JUZ",
+      juzSelections: [],
+      surahSelections: [],
+    },
+    plan: merged.plan || getSimplePlanShell(name),
+    journey: {
+      habitTime: "موعد مرن",
+      ...(merged.journey || {}),
+      displayName:
+        merged.journey?.displayName?.trim() || name || undefined,
+    },
+    intentUpdatedAt: now,
+  });
+}
+
+/**
+ * Idempotent bootstrap for simple UX:
+ * - Marks onboarding complete
+ * - Injects safe defaults for any missing critical fields
+ * Persists when a write is needed. Safe to call on every app entry.
+ */
+export function ensureSimpleProfileReady(opts?: {
+  name?: string;
+}): HafizProfile {
+  if (!isBrowser()) {
+    return buildSimpleReadyProfile({ name: opts?.name || "" });
+  }
+  const current = loadProfile();
+  const wasComplete = hasCompletedOnboarding(current);
+  const needsBootstrap = !wasComplete;
+  const needsHeal = !profileHasSafeDefaults(current);
+
+  if (!needsBootstrap && !needsHeal) {
+    return current;
+  }
+
+  const ready = buildSimpleReadyProfile({
+    ...current,
+    name: opts?.name?.trim() || current.name,
+  });
+  // Preserve existing completed users' track/plan if they already finished full onboarding
+  if (wasComplete && current.usageTrack === "AUTOMATIC_PLAN") {
+    ready.usageTrack = "AUTOMATIC_PLAN";
+    ready.hasActivePlan = current.hasActivePlan !== false;
+    if (current.plan) ready.plan = current.plan;
+  }
+  saveProfile(ready);
+  return ready;
+}
+
+function profileHasSafeDefaults(p: HafizProfile): boolean {
+  return (
+    typeof p.pagesPerDay === "number" &&
+    typeof p.dailyMinutes === "number" &&
+    typeof p.memorizationStrength === "number" &&
+    typeof p.revisionSessionsPerDay === "number" &&
+    Boolean(p.preferredQariId) &&
+    Boolean(p.learningStyle) &&
+    Boolean(p.memorizationSelection) &&
+    Boolean(p.revisionStyle) &&
+    Array.isArray(p.goals) &&
+    Boolean(p.plan) &&
+    p.onboardingComplete === true
+  );
+}
+
 /**
  * True only after the user finished onboarding on this device (or restored from cloud).
  * Also treats completedAt + plan as completed (recovery if a flag was race-reset).

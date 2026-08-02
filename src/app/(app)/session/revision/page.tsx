@@ -48,7 +48,7 @@ import {
   ArabicSpeechSession,
   isMobileSpeechEnvironment,
   isSpeechRecognitionSupported,
-  requestMicrophonePermission,
+  stopMediaStream,
 } from "@/lib/quran/speech-recognition";
 import {
   buildLiveWordStream,
@@ -342,10 +342,15 @@ function RevisionSession() {
     if (result.currentAyah) setFocusAyah(result.currentAyah);
   }
 
-  async function startMicRecording() {
+  /** Desktop-only optional local recording; single MediaStream kept open for the session. */
+  async function startMicRecording(): Promise<MediaStream | null> {
     try {
       const streamMic = await navigator.mediaDevices.getUserMedia({
-        audio: true,
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
       });
       mediaStreamRef.current = streamMic;
       mediaChunksRef.current = [];
@@ -358,24 +363,72 @@ function RevisionSession() {
         const blob = new Blob(mediaChunksRef.current, { type: "audio/webm" });
         if (userRecordingUrl) URL.revokeObjectURL(userRecordingUrl);
         setUserRecordingUrl(URL.createObjectURL(blob));
-        streamMic.getTracks().forEach((t) => t.stop());
-        mediaStreamRef.current = null;
+        // Tracks stopped by stopMicRecording / speech dispose — do not stop here
+        // if speech session still holds the stream; hard cleanup owns tracks.
       };
       rec.start(250);
+      return streamMic;
     } catch {
-      /* mic already used by speech API — optional */
+      /* optional — SpeechRecognition owns mic without recorder */
+      return null;
     }
   }
 
   function stopMicRecording() {
     try {
-      if (mediaRecorderRef.current?.state === "recording") {
+      if (
+        mediaRecorderRef.current &&
+        mediaRecorderRef.current.state !== "inactive"
+      ) {
         mediaRecorderRef.current.stop();
       }
     } catch {
       /* ignore */
     }
     mediaRecorderRef.current = null;
+    // Strict: always kill audio tracks so Chrome green-dot / notification die
+    if (mediaStreamRef.current) {
+      stopMediaStream(mediaStreamRef.current);
+      mediaStreamRef.current = null;
+    }
+  }
+
+  function killSpeechAndMic() {
+    try {
+      speechRef.current?.dispose();
+    } catch {
+      /* ignore */
+    }
+    speechRef.current = null;
+    stopMicRecording();
+    setReciting(false);
+  }
+
+  function speechHandlers(): Parameters<ArabicSpeechSession["start"]>[0] {
+    return {
+      onInterim: (t) => applyLiveTranscript(t, true),
+      onFinal: (t) => applyLiveTranscript(t, false),
+      onError: (msg) => {
+        setSpeechError(msg);
+        // Soft network/no-speech keep buffer + mode; fatal mic errors stop badge
+        if (/ميكروفون|غير مسموح|غير مدعوم|اسمح|لا يوجد/.test(msg)) {
+          setReciting(false);
+        }
+      },
+      onListeningChange: (listening) => {
+        setReciting(listening);
+      },
+      onEnd: () => {
+        // Chrome ended continuous session (mobile has no auto-restart).
+        // Keep buffer & reciteMode; user taps «متابعة الاستماع».
+        setReciting(false);
+        setSpeechError((prev) =>
+          prev && /ميكروفون|اسمح|لا يوجد/.test(prev)
+            ? prev
+            : "توقّف الاستماع مؤقتاً. اضغط «متابعة الاستماع» للمتابعة دون فقدان النص."
+        );
+      },
+    };
   }
 
   async function startRecite(opts?: {
@@ -418,60 +471,68 @@ function RevisionSession() {
     setReciteMode(true);
     setRevealText(false);
     stopAudio();
-    // Stop any prior optional recorder first — never compete with SpeechRecognition for mic
-    stopMicRecording();
+    // Full teardown of any prior session (abort + track.stop)
+    killSpeechAndMic();
 
     const mobile = isMobileSpeechEnvironment();
-    // Desktop only: optional MediaRecorder for playback review.
-    // Mobile: dual getUserMedia + SpeechRecognition causes green-mic flicker + freezes.
+    /**
+     * CRITICAL Chrome Android:
+     * Do NOT call getUserMedia before SpeechRecognition — each open/close
+     * fires "A site is using your microphone" notification chime.
+     * SpeechRecognition opens one mic session itself.
+     * Desktop: optional single MediaRecorder stream held for the session.
+     */
+    let holdStream: MediaStream | null = null;
     if (!mobile) {
-      void startMicRecording();
-    }
-
-    // Prime permission from this user gesture (critical on mobile)
-    const perm = await requestMicrophonePermission();
-    if (!perm.ok) {
-      setSpeechError(perm.error || "تعذّر تفعيل الميكروفون");
-      setReciteMode(false);
-      setReciting(false);
-      return;
+      holdStream = await startMicRecording();
     }
 
     if (!speechRef.current) speechRef.current = new ArabicSpeechSession();
-    const started = speechRef.current.start(
-      {
-        onInterim: (t) => applyLiveTranscript(t, true),
-        onFinal: (t) => applyLiveTranscript(t, false),
-        onError: (msg) => {
-          setSpeechError(msg);
-          // Soft errors keep UI open; fatal messages still stop "listening" badge
-          if (
-            /ميكروفون|غير مسموح|غير مدعوم|اسمح|لا يوجد/.test(msg)
-          ) {
-            setReciting(false);
-          }
-        },
-        onEnd: () => {
-          setReciting(false);
-        },
-      },
-      { primeMic: false }
-    );
+    const started = speechRef.current.start(speechHandlers(), {
+      allowSoftResume: !mobile,
+      holdStream,
+    });
     if (!started.ok) {
       setSpeechError(started.error || "تعذّر بدء الميكروفون");
       setReciteMode(false);
-      stopMicRecording();
-      setReciting(false);
+      killSpeechAndMic();
       return;
     }
     setReciting(true);
   }
   startReciteRef.current = startRecite;
 
+  /** Soft resume after Chrome ends continuous session — preserves transcript buffer */
+  function resumeListening() {
+    setSpeechError(null);
+    if (!speechRef.current) {
+      void startRecite({
+        mode: voiceMode,
+        fromAyah: continueFrom,
+        ayah: targetAyah || undefined,
+      });
+      return;
+    }
+    const r = speechRef.current.resume();
+    if (!r.ok) {
+      setSpeechError(r.error || "تعذّر الاستئناف — اضغط ابدأ من جديد");
+      setReciting(false);
+      return;
+    }
+    setReciting(true);
+  }
+
   function stopRecite() {
     const finalText = speechRef.current?.stop() || transcript;
     setReciting(false);
     stopMicRecording();
+    // Drop session object so exit doesn't leave zombie recognition
+    try {
+      speechRef.current?.dispose();
+    } catch {
+      /* ignore */
+    }
+    speechRef.current = null;
     const result = matchLive(
       buildLiveWordStream(getReciteAyahsList()),
       finalText,
@@ -551,18 +612,19 @@ function RevisionSession() {
   }
 
   function exitReciteMode() {
-    if (reciting) stopRecite();
-    else {
-      speechRef.current?.stop();
-      stopMicRecording();
-      setReciting(false);
+    if (reciting) {
+      stopRecite();
+    } else {
+      killSpeechAndMic();
     }
     setReciteMode(false);
     setRevealText(false);
   }
 
   function finishSession(outcome: "success" | "fail" = "success") {
+    // Strict mic kill before navigation (Chrome Android leaves green-dot otherwise)
     if (reciting) stopRecite();
+    else killSpeechAndMic();
     stopAudio();
     completeSession({
       sessionKind: mode === "memorize" ? "new_hifz" : "revision",
@@ -584,6 +646,47 @@ function RevisionSession() {
       router.push("/plans/journey");
     }
   }
+
+  // Strict cleanup on unmount / tab close / bfcache — kill mic tracks immediately
+  useEffect(() => {
+    const hardKill = () => {
+      try {
+        speechRef.current?.dispose();
+      } catch {
+        /* ignore */
+      }
+      speechRef.current = null;
+      try {
+        if (
+          mediaRecorderRef.current &&
+          mediaRecorderRef.current.state !== "inactive"
+        ) {
+          mediaRecorderRef.current.stop();
+        }
+      } catch {
+        /* ignore */
+      }
+      mediaRecorderRef.current = null;
+      stopMediaStream(mediaStreamRef.current);
+      mediaStreamRef.current = null;
+    };
+
+    const onPageHide = () => hardKill();
+    const onVisibility = () => {
+      // When user leaves the tab for long, still keep listening if possible —
+      // only kill on actual unload (pagehide). visibilitychange alone would
+      // break multi-tasking mid-recite.
+    };
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("beforeunload", onPageHide);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("beforeunload", onPageHide);
+      document.removeEventListener("visibilitychange", onVisibility);
+      hardKill();
+    };
+  }, []);
 
   // Must stay before any early return (rules-of-hooks)
   const wordsByAyah = useMemo(() => {
@@ -888,18 +991,34 @@ function RevisionSession() {
                     إنهاء التلاوة
                   </Button>
                 ) : (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="premium"
-                    className="gap-1"
-                    onClick={() =>
-                      startRecite({ mode: voiceMode, fromAyah: continueFrom, ayah: targetAyah || undefined })
-                    }
-                  >
-                    <Mic className="h-3.5 w-3.5" />
-                    استئناف
-                  </Button>
+                  <>
+                    {/* Soft resume: preserves speech buffer after Chrome ends session */}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="premium"
+                      className="gap-1"
+                      onClick={resumeListening}
+                    >
+                      <Mic className="h-3.5 w-3.5" />
+                      متابعة الاستماع
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="gap-1"
+                      onClick={() =>
+                        startRecite({
+                          mode: voiceMode,
+                          fromAyah: continueFrom,
+                          ayah: targetAyah || undefined,
+                        })
+                      }
+                    >
+                      من البداية
+                    </Button>
+                  </>
                 )}
                 <Button type="button" size="sm" variant="ghost" onClick={exitReciteMode}>
                   خروج من الوضع

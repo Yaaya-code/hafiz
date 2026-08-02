@@ -24,7 +24,7 @@ import {
   clearLocalUserData,
   isAccountBoundLocally,
 } from "@/lib/user-data-reset";
-import { hasCompletedOnboarding, loadProfile } from "@/lib/user-profile";
+
 
 export default function SignupPage() {
   const router = useRouter();
@@ -58,13 +58,10 @@ export default function SignupPage() {
         return;
       }
       setCloudUserId(result.user.userId);
-      // Seed display name from account only — no fake progress
-      if (result.user.name) {
-        const { saveProfile, loadProfile } = await import("@/lib/user-profile");
-        const p = loadProfile();
-        if (!p.onboardingComplete && !p.name) {
-          saveProfile({ ...p, name: result.user.name });
-        }
+      // Simple UX: bootstrap complete profile with safe defaults (skip long onboarding)
+      {
+        const { ensureSimpleProfileReady } = await import("@/lib/user-profile");
+        ensureSimpleProfileReady({ name: result.user.name || undefined });
       }
       // Pull cloud (empty for brand-new; guest upgrade restores cloud progress)
       try {
@@ -88,10 +85,7 @@ export default function SignupPage() {
         /* offline — pure guest keeps local; account switch already wiped */
       }
 
-      const done = hasCompletedOnboarding(loadProfile());
-      router.push(
-        done ? result.redirectTo || "/dashboard" : "/onboarding"
-      );
+      router.push(result.redirectTo || "/dashboard");
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "فشل إنشاء الحساب");

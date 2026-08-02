@@ -128,8 +128,27 @@ export async function signupAction(input: {
           guestKey: guestKeyToUse || undefined,
           profile: {
             create: {
-              onboardingComplete: false,
+              // Simple UX: ready to use without multi-step onboarding
+              onboardingComplete: true,
               preferredQariId: "alafasy",
+              pagesPerDay: 1,
+              revisionSessionsPerDay: 2,
+              dailyMinutes: 30,
+              memorizationStrength: 3,
+              revisionStyle: "BALANCED",
+              startPage: 1,
+              currentPage: 1,
+              memorizationSelection: {
+                mode: "JUZ",
+                juzSelections: [],
+                surahSelections: [],
+              },
+              preferences: {
+                learningStyle: "LISTEN_AND_READ",
+                usageTrack: "FREE_EXPLORER",
+                hasActivePlan: false,
+                simpleUx: true,
+              },
             },
           },
           syncCursor: {
@@ -167,8 +186,26 @@ export async function signupAction(input: {
                 emailVerified: new Date(),
                 profile: {
                   create: {
-                    onboardingComplete: false,
+                    onboardingComplete: true,
                     preferredQariId: "alafasy",
+                    pagesPerDay: 1,
+                    revisionSessionsPerDay: 2,
+                    dailyMinutes: 30,
+                    memorizationStrength: 3,
+                    revisionStyle: "BALANCED",
+                    startPage: 1,
+                    currentPage: 1,
+                    memorizationSelection: {
+                      mode: "JUZ",
+                      juzSelections: [],
+                      surahSelections: [],
+                    },
+                    preferences: {
+                      learningStyle: "LISTEN_AND_READ",
+                      usageTrack: "FREE_EXPLORER",
+                      hasActivePlan: false,
+                      simpleUx: true,
+                    },
                   },
                 },
                 syncCursor: {
@@ -212,7 +249,8 @@ export async function signupAction(input: {
     return { ok: false, error: "تعذّر تسجيل الدخول — حاول مجدداً" };
   }
 
-  return { ok: true, user: session, redirectTo: "/onboarding" };
+  // Simple UX: skip multi-step onboarding — land on simplified dashboard
+  return { ok: true, user: session, redirectTo: "/dashboard" };
 }
 
 export async function loginAction(input: {

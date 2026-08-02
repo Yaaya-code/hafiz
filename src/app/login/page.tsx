@@ -22,7 +22,7 @@ import {
 } from "@/lib/sync/local-snapshot";
 import { getOrCreateDeviceId } from "@/lib/storage/safe-storage";
 import { clearLocalUserData } from "@/lib/user-data-reset";
-import { hasCompletedOnboarding, loadProfile } from "@/lib/user-profile";
+
 
 function LoginForm() {
   const router = useRouter();
@@ -63,9 +63,11 @@ function LoginForm() {
         /* offline — empty local after wipe until next online pull */
       }
 
-      const done = hasCompletedOnboarding(loadProfile());
+      // Simple UX: always land on dashboard (onboarding auto-bootstrapped)
+      const { ensureSimpleProfileReady } = await import("@/lib/user-profile");
+      ensureSimpleProfileReady();
       const dest = next.startsWith("/") ? next : "/dashboard";
-      router.push(done ? dest : "/onboarding");
+      router.push(dest);
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "فشل الدخول");

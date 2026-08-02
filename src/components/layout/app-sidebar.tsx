@@ -3,42 +3,31 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  GraduationCap,
   Home,
   Settings,
-  Sparkles,
-  Target,
-  BarChart3,
   Headphones,
-  BookText,
-  Sprout,
+  Mic,
   AlertTriangle,
-  Trophy,
-  ClipboardCheck,
-  BookOpen,
-  Brain,
+  MoreHorizontal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ACTIVE_GOLD, ICON_BOUNCE, SHINE_GOLD_TEXT } from "@/lib/ui-active";
 
-const studentNav = [
-  { href: "/dashboard", label: "لوحة التحكم", icon: Home },
-  { href: "/plans/journey", label: "رحلة اليوم", icon: GraduationCap },
-  { href: "/quran", label: "القرآن", icon: BookText },
-  { href: "/plans/revision", label: "ورد المراجعة", icon: BookOpen },
-  { href: "/plans/new", label: "ورد الحفظ", icon: Sprout },
-  { href: "/listen-memorize", label: "الحفظ بالاستماع", icon: Headphones },
-  { href: "/mutashabihat", label: "المتشابهات", icon: Sparkles },
+/** Simplified primary nav — Phase A simple UX */
+const primaryNav = [
+  { href: "/dashboard", label: "الرئيسية", icon: Home },
+  { href: "/dashboard#direct", label: "تسميع مباشر", icon: Mic },
+  { href: "/dashboard#talqeen", label: "تلقين", icon: Headphones },
   { href: "/mistakes", label: "الأخطاء", icon: AlertTriangle },
-  { href: "/quiz", label: "الاختبارات", icon: ClipboardCheck },
-  { href: "/qaris", label: "القرّاء", icon: Headphones },
-  { href: "/stats", label: "الإحصائيات", icon: BarChart3 },
-  { href: "/achievements", label: "الإنجازات", icon: Trophy },
-  { href: "/goals", label: "الأهداف", icon: Target },
 ];
 
 const otherNav = [
   { href: "/settings", label: "الإعدادات", icon: Settings },
+  {
+    href: "/plans/journey",
+    label: "المزيد (رحلة اليوم)",
+    icon: MoreHorizontal,
+  },
 ];
 
 function NavLink({
@@ -101,17 +90,42 @@ export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
         />
         <div>
           <p className="font-bold text-lg leading-none text-white">حافظ</p>
-          <p className="text-xs text-[#CBD5E1]/70 mt-1">رفيق الحفظ والمراجعة</p>
+          <p className="text-xs text-[#CBD5E1]/70 mt-1">تسميع وتلقين مبسّط</p>
         </div>
       </div>
 
       <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-6">
         <div>
           <p className="mb-2 px-3 text-[11px] font-semibold text-[#CBD5E1]/50">
-            رحلة القرآن
+            ابدأ هنا
           </p>
           <ul className="space-y-1">
-            {studentNav.map((item) => {
+            {primaryNav.map((item) => {
+              const isHome = item.href === "/dashboard";
+              const isActive = isHome
+                ? pathname === "/dashboard"
+                : !item.href.includes("#") &&
+                  (pathname === item.href ||
+                    pathname.startsWith(item.href + "/"));
+              return (
+                <li key={item.href + item.label}>
+                  <NavLink
+                    {...item}
+                    active={isActive}
+                    onNavigate={onNavigate}
+                  />
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+
+        <div>
+          <p className="mb-2 px-3 text-[11px] font-semibold text-[#CBD5E1]/50">
+            الحساب
+          </p>
+          <ul className="space-y-1">
+            {otherNav.map((item) => {
               const active =
                 pathname === item.href ||
                 pathname.startsWith(item.href + "/");
@@ -127,53 +141,25 @@ export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
             })}
           </ul>
         </div>
-
-        <div>
-          <p className="mb-2 px-3 text-[11px] font-semibold text-[#CBD5E1]/50">
-            الحساب
-          </p>
-          <ul className="space-y-1">
-            {otherNav.map((item) => {
-              const active = pathname.startsWith(item.href);
-              return (
-                <li key={item.href}>
-                  <NavLink
-                    {...item}
-                    active={active}
-                    onNavigate={onNavigate}
-                  />
-                </li>
-              );
-            })}
-          </ul>
-        </div>
       </nav>
 
       <div className="border-t border-[#D4AF37]/10 p-4">
-        <div
-          className={cn(
-            "group cursor-pointer rounded-2xl border border-[#D4AF37]/15 bg-[#0A0F1A]/90 p-4 backdrop-blur-2xl",
-            "transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)]",
-            "hover:-translate-y-2 hover:scale-[1.03] hover:border-[#D4AF37] hover:shadow-[0_15px_40px_-10px_rgba(212,175,55,0.5)] hover:bg-gradient-to-br hover:from-[#0A0F1A] hover:to-[#D4AF37]/5",
-            "relative overflow-hidden after:pointer-events-none after:absolute after:inset-0 after:bg-gradient-to-tr after:from-transparent after:via-white/5 after:to-transparent after:translate-x-[-100%] hover:after:translate-x-[100%] after:transition-transform after:duration-700"
-          )}
-        >
-          <div className={cn("relative z-[2] flex items-center gap-2 text-sm", SHINE_GOLD_TEXT)}>
-            <Brain className={cn("h-4 w-4", ICON_BOUNCE, "group-hover:-translate-x-2")} />
-            وردك اليوم
-          </div>
-          <p className="relative z-[2] mt-2 text-xs text-[#CBD5E1]/70 leading-relaxed group-hover:text-[#CBD5E1] transition-colors duration-300">
-            ابدأ رحلة اليوم: مراجعة ثم حفظ ثم استماع.
+        <div className="rounded-2xl border border-[#D4AF37]/15 bg-[#0A0F1A]/90 p-4 backdrop-blur-2xl">
+          <p className={cn("text-sm font-medium", SHINE_GOLD_TEXT)}>
+            ابدأ فوراً
+          </p>
+          <p className="mt-2 text-xs text-[#CBD5E1]/70 leading-relaxed">
+            اختر سورة ونطاقاً من الرئيسية — تسميع أو تلقين.
           </p>
           <Link
-            href="/plans/journey"
+            href="/dashboard"
             onClick={onNavigate}
             className={cn(
-              "relative z-[2] mt-3 inline-flex text-xs transition-all duration-300 hover:scale-105",
+              "mt-3 inline-flex text-xs transition-all duration-300 hover:scale-105",
               SHINE_GOLD_TEXT
             )}
           >
-            افتح رحلة اليوم ←
+            الرئيسية ←
           </Link>
         </div>
       </div>

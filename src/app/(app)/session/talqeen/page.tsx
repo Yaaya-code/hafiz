@@ -231,7 +231,7 @@ function TalqeenInner() {
           if (!wordStream.length) return;
           const r = matchLive(wordStream, t, {
             interim: true,
-            streaming: true,
+            strict: true,
           });
           setLiveWords(r.display);
           setAccuracy(r.stats.accuracy);
@@ -240,7 +240,7 @@ function TalqeenInner() {
           if (!wordStream.length) return;
           const r = matchLive(wordStream, t, {
             interim: true,
-            streaming: true,
+            strict: true,
           });
           setLiveWords(r.display);
           setAccuracy(r.stats.accuracy);
@@ -284,7 +284,7 @@ function TalqeenInner() {
     // Final soft score — incomplete is not catastrophic fail
     const r = matchLive(wordStream, text, {
       interim: false,
-      streaming: true,
+      strict: true,
     });
     setLiveWords(r.display);
     setAccuracy(r.stats.accuracy);

@@ -40,6 +40,7 @@ import { FadeIn } from "@/components/motion/fade-in";
 import { SurahGuide } from "@/components/quran/surah-guide";
 import { PageHeader } from "@/components/layout/back-button";
 import {
+  playContinuousPlaylist,
   playGlobalAudio,
   stopGlobalAudio,
 } from "@/lib/audio/global-audio";
@@ -56,6 +57,7 @@ export default function QuranReaderPage() {
   const [continuous, setContinuous] = useState(false);
   const [repeat, setRepeat] = useState(false);
   const continuousRef = useRef(false);
+  const continuousStopRef = useRef<(() => void) | null>(null);
   const [noteText, setNoteText] = useState("");
   const [bookmarks, setBookmarks] = useState<ReturnType<typeof loadBookmarks>>(
     []
@@ -124,12 +126,16 @@ export default function QuranReaderPage() {
   function stopAudio() {
     continuousRef.current = false;
     setContinuous(false);
+    continuousStopRef.current?.();
+    continuousStopRef.current = null;
     stopGlobalAudio();
     setPlaying(false);
   }
 
   function playCurrent() {
     if (!current) return;
+    continuousStopRef.current?.();
+    continuousStopRef.current = null;
     continuousRef.current = false;
     setContinuous(false);
     const url = ayahAudioUrl(qariId, surahNum, ayahNum);
@@ -149,37 +155,37 @@ export default function QuranReaderPage() {
     });
   }
 
-  /** Continuous surah playback: onEnded → next ayah auto-play */
+  /**
+   * Gapless continuous surah: preload i+1 while playing i,
+   * swap instantly on onEnded (playContinuousPlaylist).
+   */
   function playSurahContinuous(fromAyah = 1) {
+    continuousStopRef.current?.();
     continuousRef.current = true;
     setContinuous(true);
     const start = Math.max(1, Math.min(surah.ayahCount, fromAyah));
-
-    const playAt = (ayah: number) => {
-      if (!continuousRef.current) return;
-      setAyahNum(ayah);
-      setPlaying(true);
-      const url = ayahAudioUrl(qariId, surahNum, ayah);
-      playGlobalAudio(url, {
-        onEnded: () => {
-          if (!continuousRef.current) return;
-          if (ayah < surah.ayahCount) {
-            playAt(ayah + 1);
-          } else {
-            continuousRef.current = false;
-            setContinuous(false);
-            setPlaying(false);
-          }
-        },
-        onError: () => {
-          continuousRef.current = false;
-          setContinuous(false);
-          setPlaying(false);
-        },
-      });
-    };
-
-    playAt(start);
+    const urls: string[] = [];
+    for (let a = start; a <= surah.ayahCount; a++) {
+      urls.push(ayahAudioUrl(qariId, surahNum, a));
+    }
+    setPlaying(true);
+    const handle = playContinuousPlaylist({
+      urls,
+      onIndex: (i) => {
+        setAyahNum(start + i);
+        setPlaying(true);
+      },
+      onComplete: () => {
+        continuousRef.current = false;
+        setContinuous(false);
+        setPlaying(false);
+        continuousStopRef.current = null;
+      },
+      onError: () => {
+        /* skip handled inside playlist */
+      },
+    });
+    continuousStopRef.current = handle.stop;
   }
 
   function goSurah(n: number) {

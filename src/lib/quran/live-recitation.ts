@@ -1,8 +1,9 @@
 /**
- * Streaming word-level alignment for live Quran recitation.
- * - Interim tokens advance the cursor word-by-word
- * - Green = matched · Red = skipped/wrong · Gold = current
- * - Never waits for ayah/range end to paint status
+ * Word-level live alignment for Quran recitation.
+ *
+ * modes:
+ * - streaming (default false for skips): can mark skipped words red when user jumps ahead
+ * - strict: NEVER advance past current word unless high-confidence match / partial madd
  */
 
 import {
@@ -34,7 +35,6 @@ export type LiveDisplayWord = {
   ayahNumber: number;
   globalIndex: number;
   status: LiveStatus;
-  /** Always true in streaming UI — full range stays visible */
   revealed: boolean;
   note?: string;
 };
@@ -75,22 +75,51 @@ export function buildLiveWordStream(
 export type MatchLiveOptions = {
   interim?: boolean;
   /**
-   * Streaming alignment (default true):
-   * commit skips immediately even on interim so red paints word-by-word.
+   * When true (and not strict): allow marking skipped words red if user jumps ahead.
+   * Default false for safety; talqeen/direct pass explicitly.
    */
   streaming?: boolean;
+  /**
+   * Strict mode: never jump to a later word. Only advance on high-confidence
+   * match of the CURRENT expected word (or madd partial of it).
+   */
+  strict?: boolean;
 };
 
 /**
- * Align spoken transcript against the expected word stream.
- * Optimized for continuous onInterim updates (no block-wait).
+ * High-confidence full match (stricter than wordsMatch for final commit).
  */
+export function wordsMatchStrict(expected: string, spoken: string): boolean {
+  const e = quranNormalize(expected);
+  const s = quranNormalize(spoken);
+  if (!e || !s) return false;
+  if (e === s) return true;
+  // Drop alifs (madd) only if both collapse to same skeleton ≥ 3 chars
+  const e2 = e.replace(/ا/g, "");
+  const s2 = s.replace(/ا/g, "");
+  if (e2.length >= 3 && e2 === s2) return true;
+  // Very tight fuzzy: max 1 edit for short, 15% for longer
+  if (e.length <= 2) return e === s;
+  const maxLen = Math.max(e.length, s.length);
+  const dist = (() => {
+    // reuse wordsMatch only when clearly close
+    return wordsMatch(e, s);
+  })();
+  if (!dist) return false;
+  // wordsMatch already true — require length ratio not too wild
+  if (Math.abs(e.length - s.length) > Math.max(2, Math.floor(e.length * 0.25))) {
+    return false;
+  }
+  return true;
+}
+
 export function matchLive(
   stream: LiveAyahWords[],
   spokenText: string,
   opts: MatchLiveOptions = {}
 ): LiveMatchResult {
-  const streaming = opts.streaming !== false;
+  const strict = opts.strict === true;
+  const streaming = !strict && opts.streaming === true;
   const interim = opts.interim === true;
 
   const flat: { text: string; norm: string; ayahNumber: number }[] = [];
@@ -121,7 +150,6 @@ export function matchLive(
   let prevSpoken = "";
   let revealMax = -1;
 
-  /** Mark oi..to-1 as skipped (red) and advance */
   function markSkipped(from: number, to: number) {
     for (let k = from; k < to; k++) {
       if (status[k] === "correct") continue;
@@ -136,9 +164,8 @@ export function matchLive(
     const sWord = spoken[si];
     const exp = flat[oi].norm;
 
-    // Ignore exact ASR duplicates of previous token
     if (sWord === prevSpoken && sWord.length > 1) {
-      if (wordsMatch(exp, sWord) || isPartialWord(exp, sWord)) {
+      if (wordsMatchStrict(exp, sWord) || isPartialWord(exp, sWord)) {
         si++;
         continue;
       }
@@ -147,8 +174,8 @@ export function matchLive(
       continue;
     }
 
-    // 1) Exact match → green immediately
-    if (wordsMatch(exp, sWord) && !isPartialWord(exp, sWord)) {
+    // 1) High-confidence match of CURRENT word only
+    if (wordsMatchStrict(exp, sWord) && !isPartialWord(exp, sWord)) {
       status[oi] = "correct";
       revealMax = Math.max(revealMax, oi);
       prevSpoken = sWord;
@@ -157,7 +184,7 @@ export function matchLive(
       continue;
     }
 
-    // 2) Madd / partial elongation of current expected word
+    // 2) Madd / partial of CURRENT word only
     if (isPartialWord(exp, sWord)) {
       status[oi] = "partial";
       prevSpoken = sWord;
@@ -165,11 +192,11 @@ export function matchLive(
       continue;
     }
 
-    // 3) Merge ASR fragments into one expected word
+    // 3) Merge fragments for CURRENT expected word
     let mergedHit = false;
     for (let take = 2; take <= 5 && si + take - 1 < spoken.length; take++) {
       const merged = spoken.slice(si, si + take).join("");
-      if (wordsMatch(exp, merged) && !isPartialWord(exp, merged)) {
+      if (wordsMatchStrict(exp, merged) && !isPartialWord(exp, merged)) {
         status[oi] = "correct";
         revealMax = Math.max(revealMax, oi);
         prevSpoken = merged;
@@ -188,79 +215,72 @@ export function matchLive(
     }
     if (mergedHit) continue;
 
-    // 4) User skipped ahead — look for sWord within next window
-    let foundLater = -1;
-    const lookAhead = streaming ? 8 : 4;
-    for (let k = oi + 1; k < Math.min(total, oi + lookAhead); k++) {
-      if (wordsMatch(flat[k].norm, sWord)) {
-        foundLater = k;
-        break;
+    // 4) STRICT: never look ahead — discard noise token, stay on current
+    if (strict) {
+      // Soft: ignore unmatched interim tokens without advancing expected cursor
+      if (interim && si === spoken.length - 1) {
+        status[oi] = "current";
+        prevSpoken = sWord;
+        si++;
+        continue;
       }
-      // partial match on a later word (still elongating)
-      if (isPartialWord(flat[k].norm, sWord)) {
-        foundLater = k;
-        break;
+      // Non-interim unmatched: count as extra noise, stay on word
+      if (isMeaningfulSpokenToken(sWord)) {
+        extra++;
+      }
+      prevSpoken = sWord;
+      si++;
+      continue;
+    }
+
+    // 5) Non-strict streaming: optional skip-ahead
+    let foundLater = -1;
+    if (streaming) {
+      for (let k = oi + 1; k < Math.min(total, oi + 6); k++) {
+        if (wordsMatchStrict(flat[k].norm, sWord)) {
+          foundLater = k;
+          break;
+        }
       }
     }
 
     if (foundLater > oi) {
-      // STREAMING: commit skips immediately (even on interim last token)
-      const commitSkip =
-        streaming || !interim || si < spoken.length - 1;
+      const commitSkip = !interim || si < spoken.length - 1;
       if (commitSkip) {
         markSkipped(oi, foundLater);
-        if (wordsMatch(flat[foundLater].norm, sWord)) {
-          status[foundLater] = "correct";
-          revealMax = Math.max(revealMax, foundLater);
-          oi = foundLater + 1;
-        } else {
-          // partial on later word
-          status[foundLater] = "partial";
-          oi = foundLater;
-        }
+        status[foundLater] = "correct";
+        revealMax = Math.max(revealMax, foundLater);
+        oi = foundLater + 1;
         prevSpoken = sWord;
         si++;
         continue;
       }
     }
 
-    // 5) Extra spoken noise before the expected word
+    // 6) Extra spoken before expected
     let foundSpoken = -1;
-    for (let k = si + 1; k < Math.min(spoken.length, si + 4); k++) {
-      if (wordsMatch(exp, spoken[k])) {
+    for (let k = si + 1; k < Math.min(spoken.length, si + 3); k++) {
+      if (wordsMatchStrict(exp, spoken[k])) {
         foundSpoken = k;
         break;
       }
     }
     if (foundSpoken > si) {
-      const between = spoken
+      extra += spoken
         .slice(si, foundSpoken)
-        .filter((w) => isMeaningfulSpokenToken(w));
-      if (between.length > 0) {
-        extra += between.length;
-      }
+        .filter((w) => isMeaningfulSpokenToken(w)).length;
       si = foundSpoken;
       continue;
     }
 
-    // 6) Last interim token not matching — mark as current cursor (gold)
-    if (interim && si === spoken.length - 1 && streaming) {
-      // If it clearly doesn't match and isn't partial, still show cursor
+    if (interim && si === spoken.length - 1) {
       status[oi] = "current";
       prevSpoken = sWord;
       si++;
       continue;
     }
 
-    // 7) Confirmed wrong word at cursor
-    // On pure interim single last token without streaming skip, stay soft
-    if (interim && !streaming && si === spoken.length - 1) {
-      status[oi] = "current";
-      prevSpoken = sWord;
-      si++;
-      continue;
-    }
-
+    // Soft incorrect on current only (no jump)
     status[oi] = "incorrect";
     notes[oi] =
       "المتوقع «" + flat[oi].text + "» · سمعت «" + sWord + "»";
@@ -271,26 +291,24 @@ export function matchLive(
     si++;
   }
 
-  // Trailing extras after full match
   if (oi >= total && si < spoken.length) {
-    const trailing = spoken.slice(si).filter((w) => isMeaningfulSpokenToken(w));
-    extra += trailing.length;
+    extra += spoken.slice(si).filter((w) => isMeaningfulSpokenToken(w)).length;
   }
 
-  // Cursor highlight on first pending word
   if (oi < total && status[oi] === "pending") {
     status[oi] = "current";
   }
 
   const display: LiveDisplayWord[] = flat.map((w, i) => {
     const st = status[i];
+    const confirmed =
+      st === "correct" || st === "missing" || st === "incorrect";
     return {
       text: w.text,
       ayahNumber: w.ayahNumber,
       globalIndex: i,
       status: st,
-      // Full range always visible (streaming UX)
-      revealed: true,
+      revealed: confirmed,
       note: notes[i],
     };
   });
@@ -307,57 +325,32 @@ export function matchLive(
 
   for (const a of stream) {
     const words = byAyah.get(a.ayahNumber) || [];
-    if (words.some((w) => w.status !== "pending" && w.status !== "hidden")) {
+    if (words.some((w) => w.revealed || w.status === "current" || w.status === "partial")) {
       revealedUpToAyah = a.ayahNumber;
       currentAyah = a.ayahNumber;
     }
-    if (
-      words.length &&
-      words.every((w) => w.status === "correct")
-    ) {
+    if (words.length && words.every((w) => w.status === "correct")) {
       lastCompletedAyah = a.ayahNumber;
     }
   }
-  if (oi < total) {
-    currentAyah = flat[oi].ayahNumber;
-  } else if (flat.length) {
+  if (oi < total) currentAyah = flat[oi].ayahNumber;
+  else if (flat.length) {
     currentAyah = flat[flat.length - 1].ayahNumber;
     revealedUpToAyah = Math.max(revealedUpToAyah, currentAyah);
   }
 
   let confirmedMax = -1;
   for (let i = 0; i < display.length; i++) {
-    if (
-      display[i].status === "correct" ||
-      display[i].status === "incorrect" ||
-      display[i].status === "missing"
-    ) {
-      confirmedMax = i;
-    }
+    if (display[i].revealed) confirmedMax = i;
   }
-  revealMax = confirmedMax;
 
   const correctCount = display.filter((w) => w.status === "correct").length;
   const errorCount = display.filter(
     (w) => w.status === "incorrect" || w.status === "missing"
   ).length;
-  const judgedPositions = correctCount + errorCount;
-  const accuracy =
-    judgedPositions === 0 ? 0 : correctCount / Math.max(1, judgedPositions);
-
-  const allTargetMatched =
-    total > 0 && correctCount === total && errorCount === 0;
-  let finalExtra = extra;
-  let finalMsg = lastMessage;
-  if (allTargetMatched || accuracy >= 0.999) {
-    finalExtra = 0;
-    if (
-      finalMsg &&
-      (finalMsg.includes("زائدة") || finalMsg.includes("تخط"))
-    ) {
-      finalMsg = undefined;
-    }
-  }
+  const judged = correctCount + errorCount;
+  const accuracy = judged === 0 ? 0 : correctCount / Math.max(1, judged);
+  const allOk = total > 0 && correctCount === total && errorCount === 0;
 
   return {
     display,
@@ -365,24 +358,23 @@ export function matchLive(
       matched: correctCount,
       missing: 0,
       incorrect: errorCount,
-      extra: finalExtra,
+      extra: allOk ? 0 : extra,
       repeated,
       total,
-      accuracy: allTargetMatched ? 1 : accuracy,
-      lastMessage: finalMsg,
+      accuracy: allOk ? 1 : accuracy,
+      lastMessage: allOk ? undefined : lastMessage,
     },
     revealedUpToAyah,
     lastCompletedAyah,
     currentAyah,
-    revealedWordIndex: revealMax,
+    revealedWordIndex: confirmedMax,
     cursor: oi,
   };
 }
 
 function isMeaningfulSpokenToken(w: string): boolean {
   const t = (w || "").trim();
-  if (!t) return false;
-  if (t.length <= 1) return false;
+  if (!t || t.length <= 1) return false;
   if (/^[.…,،؟?\-–—_]+$/.test(t)) return false;
   return true;
 }
@@ -394,16 +386,12 @@ export function finalFeedbackAr(
 ): string {
   const pct = Math.round(stats.accuracy * 100);
   const next = lastCompletedAyah > 0 ? lastCompletedAyah + 1 : 1;
-  const extra =
-    pct >= 100 || (stats.matched === stats.total && stats.missing === 0)
-      ? 0
-      : stats.extra;
   const lines = [
     "تقرير التلاوة",
     "────────────",
     "الدقة: " + pct + "%",
     "كلمات صحيحة: " + stats.matched + " / " + stats.total,
-    "غير مطابقة / متجاوزة: " + stats.incorrect,
+    "غير مطابقة: " + stats.incorrect,
     "",
     lastCompletedAyah > 0
       ? "أكملت حتى الآية " + lastCompletedAyah + " من " + totalAyahs + "."
@@ -411,17 +399,13 @@ export function finalFeedbackAr(
     next <= totalAyahs
       ? "المتبقي: الآيات " + next + "–" + totalAyahs + "."
       : "أحسنت — أنهيت النطاق.",
-    "",
   ];
-  if (extra > 0) {
-    lines.push("كلمات زائدة محتملة: " + extra);
-  }
-  if (pct >= 95 && stats.incorrect === 0 && extra === 0) {
-    lines.push("طلاقة ممتازة. المدود لم تُحسب فواصل كلمات.");
+  if (pct >= 95 && stats.incorrect === 0) {
+    lines.push("", "طلاقة ممتازة.");
   } else if (pct >= 80) {
-    lines.push("أداء جيد. راجع الكلمات الحمراء فقط.");
+    lines.push("", "أداء جيد — راجع الكلمات الحمراء.");
   } else {
-    lines.push("أعد من موضع التوقف ببطء.");
+    lines.push("", "أعد من موضع التوقف ببطء.");
   }
   return lines.join("\n");
 }

@@ -11,6 +11,25 @@ type EndHandler = () => void;
 let current: HTMLAudioElement | null = null;
 let generation = 0;
 let onEndHandler: EndHandler | null = null;
+let playlistGen = 0;
+let preloaded: HTMLAudioElement | null = null;
+let preloadedUrl: string | null = null;
+
+function disposePreload() {
+  if (preloaded) {
+    try {
+      preloaded.oncanplaythrough = null;
+      preloaded.onerror = null;
+      preloaded.pause();
+      preloaded.removeAttribute("src");
+      preloaded.load();
+    } catch {
+      /* ignore */
+    }
+  }
+  preloaded = null;
+  preloadedUrl = null;
+}
 
 export function isBrowserAudio(): boolean {
   return typeof window !== "undefined" && typeof Audio !== "undefined";
@@ -36,7 +55,9 @@ function emitAudioNotice(message: string, kind: "offline" | "error" | "fallback"
 /** Hard-stop and clear any playing audio across the app */
 export function stopGlobalAudio(): void {
   generation += 1;
+  playlistGen += 1;
   onEndHandler = null;
+  disposePreload();
   if (!current) {
     emitStop();
     return;
@@ -183,3 +204,142 @@ export function pauseGlobalAudio(): void {
     emitStop();
   }
 }
+
+// ── Gapless continuous playlist ──────────────────────────────────────────
+
+/**
+ * Prefetch next URL into a hidden Audio element so onEnded can start
+ * with near-zero latency (gapless continuous surah play).
+ */
+export function preloadGlobalAudio(url: string): void {
+  if (!isBrowserAudio() || !url) return;
+  if (preloadedUrl === url && preloaded) return;
+  disposePreload();
+  try {
+    const a = new Audio();
+    a.preload = "auto";
+    a.src = url;
+    // Kick network fetch without playing
+    void a.load();
+    preloaded = a;
+    preloadedUrl = url;
+  } catch {
+    disposePreload();
+  }
+}
+
+export type ContinuousPlaylistOpts = {
+  /** Ordered list of verse URLs */
+  urls: string[];
+  /** Called when active index changes (0-based) */
+  onIndex?: (index: number) => void;
+  onComplete?: () => void;
+  onError?: (message: string) => void;
+};
+
+/**
+ * Play a list of URLs gaplessly: while playing i, preload i+1;
+ * onEnded swaps to the preloaded element immediately.
+ */
+export function playContinuousPlaylist(
+  opts: ContinuousPlaylistOpts
+): { stop: () => void } {
+  const urls = (opts.urls || []).filter(Boolean);
+  playlistGen += 1;
+  const gen = playlistGen;
+
+  const stop = () => {
+    playlistGen += 1;
+    disposePreload();
+    stopGlobalAudio();
+  };
+
+  if (!urls.length || !isBrowserAudio()) {
+    opts.onError?.("لا توجد مقاطع صوتية");
+    return { stop };
+  }
+
+  let index = 0;
+
+  const playIndex = (i: number) => {
+    if (gen !== playlistGen) return;
+    if (i < 0 || i >= urls.length) {
+      disposePreload();
+      opts.onComplete?.();
+      emitStop();
+      return;
+    }
+    index = i;
+    opts.onIndex?.(i);
+
+    const url = urls[i];
+    const nextUrl = urls[i + 1];
+
+    // Prefer preloaded element when it matches
+    let audio: HTMLAudioElement;
+    if (preloaded && preloadedUrl === url) {
+      audio = preloaded;
+      preloaded = null;
+      preloadedUrl = null;
+    } else {
+      disposePreload();
+      audio = new Audio(url);
+      audio.preload = "auto";
+    }
+
+    // Stop previous without bumping playlist gen
+    if (current && current !== audio) {
+      try {
+        current.onended = null;
+        current.onerror = null;
+        current.pause();
+        current.removeAttribute("src");
+        current.load();
+      } catch {
+        /* ignore */
+      }
+    }
+
+    generation += 1;
+    const trackGen = generation;
+    current = audio;
+    onEndHandler = null;
+
+    // Preload next while this plays
+    if (nextUrl) {
+      // small delay so current play() wins bandwidth first
+      window.setTimeout(() => {
+        if (gen === playlistGen) preloadGlobalAudio(nextUrl);
+      }, 80);
+    } else {
+      disposePreload();
+    }
+
+    audio.onended = () => {
+      if (gen !== playlistGen || trackGen !== generation) return;
+      current = null;
+      // Instant handoff to next (already preloading)
+      playIndex(i + 1);
+    };
+
+    audio.onerror = () => {
+      if (gen !== playlistGen) return;
+      // Skip failed ayah, try next
+      emitAudioNotice("تعذّر مقطع — المتابعة للتالي…", "error");
+      playIndex(i + 1);
+    };
+
+    emitPlay(url);
+    void audio.play().catch((err) => {
+      if (gen !== playlistGen) return;
+      const msg =
+        err instanceof Error ? err.message : "تعذّر التشغيل";
+      opts.onError?.(msg);
+      playIndex(i + 1);
+    });
+  };
+
+  playIndex(0);
+  return { stop };
+}
+

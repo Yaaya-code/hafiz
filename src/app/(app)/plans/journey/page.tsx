@@ -79,9 +79,55 @@ export default function DailyJourneyPage() {
     };
   }, [refresh]);
 
-  if (!profileReady || !planReady || !view) {
+  if (!profileReady || !planReady) {
     return (
       <p className="p-8 text-sm text-muted-foreground">جاري تحميل رحلتك...</p>
+    );
+  }
+
+  /**
+   * Empty state for new users without a real daily plan —
+   * never show "finish the journey" chrome on an empty shell.
+   */
+  const noRealPlan =
+    !view ||
+    steps.length === 0 ||
+    profile.hasActivePlan === false;
+
+  if (noRealPlan) {
+    return (
+      <div className="mx-auto max-w-lg space-y-6 py-10 px-4 text-center">
+        <BackButton href="/dashboard" label="رجوع" />
+        <div
+          className={cn(
+            glass,
+            "rounded-3xl p-8 space-y-4 text-center cursor-default hover:translate-y-0 hover:scale-100"
+          )}
+        >
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-[#D4AF37]/15 text-3xl">
+            🌿
+          </div>
+          <h1 className="text-2xl font-bold text-white">ابدأ رحلة الحفظ</h1>
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            لا توجد خطة يومية مسجّلة بعد. أجب عن أسئلة قصيرة لنبنى لك ورداً
+            يناسب مستواك ووقتك — أو ابدأ فوراً من التسميع والتلقين.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-3 justify-center pt-2">
+            <Link
+              href="/onboarding"
+              className="gold-cta inline-flex h-12 items-center justify-center rounded-xl px-6 text-sm font-bold"
+            >
+              بناء خطتي
+            </Link>
+            <Link
+              href="/dashboard"
+              className="inline-flex h-12 items-center justify-center rounded-xl border border-[#D4AF37]/30 px-6 text-sm text-[#D4AF37] hover:bg-[#D4AF37]/10"
+            >
+              التسميع والتلقين
+            </Link>
+          </div>
+        </div>
+      </div>
     );
   }
 

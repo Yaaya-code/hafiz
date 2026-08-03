@@ -13,8 +13,12 @@
 
 import type { SpeechHandlers } from "./speech-recognition";
 
+/**
+ * Transformers.js ASR accepts only: string | URL | Float32Array | Float64Array.
+ * Passing { array, sampling_rate } hits WhisperFeatureExtractor as plain Object → crash.
+ */
 type AsrPipeline = (
-  audio: Float32Array | { array: Float32Array; sampling_rate: number },
+  audio: Float32Array | Float64Array | string | URL,
   opts?: Record<string, unknown>
 ) => Promise<{ text?: string } | { text?: string }[]>;
 
@@ -277,7 +281,12 @@ function mergeTranscript(base: string, next: string): string {
 }
 
 function downsampleTo16k(input: Float32Array, fromRate: number): Float32Array {
-  if (fromRate === TARGET_SR) return input;
+  if (fromRate === TARGET_SR) {
+    // Always return a contiguous Float32Array (not a view / SharedArrayBuffer slice)
+    return input instanceof Float32Array
+      ? new Float32Array(input)
+      : Float32Array.from(input as ArrayLike<number>);
+  }
   const ratio = fromRate / TARGET_SR;
   const newLen = Math.max(1, Math.floor(input.length / ratio));
   const out = new Float32Array(newLen);
@@ -285,6 +294,22 @@ function downsampleTo16k(input: Float32Array, fromRate: number): Float32Array {
     out[i] = input[Math.floor(i * ratio)] ?? 0;
   }
   return out;
+}
+
+/**
+ * WhisperFeatureExtractor requires a real Float32Array / Float64Array.
+ * Never pass plain objects, AudioBuffer, or { array, sampling_rate }.
+ */
+function toWhisperPcm(input: Float32Array): Float32Array {
+  if (!(input instanceof Float32Array) || input.length === 0) {
+    throw new Error(
+      "صيغة الصوت غير صالحة للمحرك (متوقع Float32Array خام)."
+    );
+  }
+  // Detach from mic ring buffer so concurrent onaudioprocess can't mutate mid-infer
+  const pcm = new Float32Array(input.length);
+  pcm.set(input);
+  return pcm;
 }
 
 function formatErr(e: unknown): string {
@@ -541,14 +566,13 @@ export class WasmWhisperSpeechSession {
 
     this.inferring = true;
     try {
-      const result = await sharedPipeline(
-        { array: audio, sampling_rate: TARGET_SR },
-        {
-          language: "arabic",
-          task: "transcribe",
-          return_timestamps: false,
-        }
-      );
+      // MUST be raw Float32Array @ 16 kHz — not { array, sampling_rate } Object
+      const pcm = toWhisperPcm(audio);
+      const result = await sharedPipeline(pcm, {
+        language: "arabic",
+        task: "transcribe",
+        return_timestamps: false,
+      });
       const raw = Array.isArray(result) ? result[0]?.text : result?.text;
       const text = (raw || "").trim();
       if (!text) return;

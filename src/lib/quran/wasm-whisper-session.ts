@@ -24,6 +24,11 @@ const TARGET_SR = 16000;
 const WINDOW_SEC = 5;
 const TICK_SEC = 2.5;
 const MAX_BUFFER_SEC = 28;
+/**
+ * Multilingual tiny Whisper (free, in-browser).
+ * Must load full-precision ONNX (fp32) — default quantized MatMulNBits weights
+ * crash many mobile ORT builds (missing embed_tokens scale / DequantizeLinear).
+ */
 const MODEL_ID = "Xenova/whisper-tiny";
 /** Whole pipeline including dynamic import of transformers + ONNX init */
 const PIPELINE_TIMEOUT_MS = 180_000;
@@ -148,6 +153,11 @@ async function ensurePipeline(onProgress?: ProgressCb): Promise<AsrPipeline> {
               "automatic-speech-recognition",
               MODEL_ID,
               {
+                // Avoid MatMulNBits / DequantizeLinear crashes on mobile ORT
+                // (ERROR: Missing required scale … embed_tokens.weight_merged_0_scale).
+                // quantized:false is the v2 API; dtype:"fp32" is the v3+ API.
+                quantized: false,
+                dtype: "fp32",
                 progress_callback: (p: {
                   status?: string;
                   progress?: number;
@@ -202,7 +212,7 @@ async function ensurePipeline(onProgress?: ProgressCb): Promise<AsrPipeline> {
                     recomputeAggregateProgress("تحميل ملفات النموذج…");
                   }
                 },
-              }
+              } as Record<string, unknown>
             );
 
             emitProgress(

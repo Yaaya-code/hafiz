@@ -1,9 +1,12 @@
 /**
  * Word-level live alignment for Quran recitation.
  *
- * modes:
- * - streaming (default false for skips): can mark skipped words red when user jumps ahead
- * - strict: NEVER advance past current word unless high-confidence match / partial madd
+ * Strict UX rules (direct mode):
+ * 1) No premature reveal: never show/highlight word N+1 just because N matched.
+ *    A word becomes visible only after the user actually uttered something that
+ *    was judged against it (correct OR incorrect).
+ * 2) No ignored mistakes: meaningful spoken tokens that fail the match threshold
+ *    mark the expected Quran word red (status: "incorrect"), not silent skip.
  */
 
 import {
@@ -80,11 +83,34 @@ export type MatchLiveOptions = {
    */
   streaming?: boolean;
   /**
-   * Strict mode: never jump to a later word. Only advance on high-confidence
-   * match of the CURRENT expected word (or madd partial of it).
+   * Strict mode (default for direct):
+   * - never reveal the next word until it is spoken
+   * - never soft-ignore meaningful wrong words
    */
   strict?: boolean;
 };
+
+/** Levenshtein distance (exported for tests / diagnostics). */
+export function levenshtein(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
+      );
+    }
+  }
+  return dp[m][n];
+}
 
 /**
  * High-confidence full match (stricter than wordsMatch for final commit).
@@ -104,7 +130,26 @@ export function wordsMatchStrict(expected: string, spoken: string): boolean {
   if (Math.abs(e.length - s.length) > Math.max(2, Math.floor(e.length * 0.25))) {
     return false;
   }
-  return true;
+  // Extra Levenshtein gate so loose skeleton matches don't auto-advance
+  const dist = levenshtein(e, s);
+  const maxLen = Math.max(e.length, s.length);
+  if (maxLen <= 4) return dist <= 1;
+  return dist / maxLen <= 0.3;
+}
+
+/** True when spoken is clearly not the expected word (committed mistake). */
+export function isClearMismatch(expected: string, spoken: string): boolean {
+  const e = quranNormalize(expected);
+  const s = quranNormalize(spoken);
+  if (!e || !s) return false;
+  if (wordsMatchStrict(e, s)) return false;
+  if (isPartialWord(e, s)) return false;
+  // Very short tokens: only exact equality is a match; else mismatch if meaningful
+  if (e.length <= 2) return s !== e && s.length >= 2;
+  const dist = levenshtein(e, s);
+  const maxLen = Math.max(e.length, s.length);
+  // Far enough that this is not "almost" the word
+  return dist / maxLen > 0.35;
 }
 
 export function matchLive(
@@ -142,7 +187,14 @@ export function matchLive(
   let repeated = 0;
   let lastMessage: string | undefined;
   let prevSpoken = "";
-  let revealMax = -1;
+
+  function markIncorrect(idx: number, spokenWord: string) {
+    if (idx < 0 || idx >= total) return;
+    status[idx] = "incorrect";
+    notes[idx] =
+      "المتوقع «" + flat[idx].text + "» · سمعت «" + spokenWord + "»";
+    lastMessage = notes[idx];
+  }
 
   function markSkipped(from: number, to: number) {
     for (let k = from; k < to; k++) {
@@ -150,14 +202,17 @@ export function matchLive(
       status[k] = "incorrect";
       notes[k] = "تم تخطّي «" + flat[k].text + "»";
       lastMessage = notes[k];
-      revealMax = Math.max(revealMax, k);
     }
   }
 
   while (si < spoken.length && oi < total) {
     const sWord = spoken[si];
     const exp = flat[oi].norm;
+    const isLastToken = si === spoken.length - 1;
+    /** Last interim token may still be growing — never judge wrong yet */
+    const softInterim = interim && isLastToken;
 
+    // Repeated same token (ASR re-emit)
     if (sWord === prevSpoken && sWord.length > 1) {
       if (wordsMatchStrict(exp, sWord) || isPartialWord(exp, sWord)) {
         si++;
@@ -171,7 +226,6 @@ export function matchLive(
     // 1) High-confidence match of CURRENT word only
     if (wordsMatchStrict(exp, sWord) && !isPartialWord(exp, sWord)) {
       status[oi] = "correct";
-      revealMax = Math.max(revealMax, oi);
       prevSpoken = sWord;
       oi++;
       si++;
@@ -179,6 +233,7 @@ export function matchLive(
     }
 
     // 2) Madd / partial of CURRENT word only
+    //    Do NOT reveal the next word. Partial is non-revealed (UX: no premature).
     if (isPartialWord(exp, sWord)) {
       status[oi] = "partial";
       prevSpoken = sWord;
@@ -186,13 +241,13 @@ export function matchLive(
       continue;
     }
 
-    // 3) Merge fragments for CURRENT expected word
+    // 3) Merge ASR fragments for CURRENT expected word only
     let mergedHit = false;
     for (let take = 2; take <= 5 && si + take - 1 < spoken.length; take++) {
       const merged = spoken.slice(si, si + take).join("");
+      const lastOfMerge = si + take - 1 === spoken.length - 1;
       if (wordsMatchStrict(exp, merged) && !isPartialWord(exp, merged)) {
         status[oi] = "correct";
-        revealMax = Math.max(revealMax, oi);
         prevSpoken = merged;
         oi++;
         si += take;
@@ -200,6 +255,14 @@ export function matchLive(
         break;
       }
       if (isPartialWord(exp, merged)) {
+        // If still building (ends at interim last), keep partial
+        if (interim && lastOfMerge) {
+          status[oi] = "partial";
+          prevSpoken = merged;
+          si += take;
+          mergedHit = true;
+          break;
+        }
         status[oi] = "partial";
         prevSpoken = merged;
         si += take;
@@ -209,22 +272,42 @@ export function matchLive(
     }
     if (mergedHit) continue;
 
-    // 4) STRICT: never look ahead — discard noise token, stay on current
+    // 4) STRICT path
     if (strict) {
-      // Soft: ignore unmatched interim tokens without advancing expected cursor
-      if (interim && si === spoken.length - 1) {
-        status[oi] = "current";
+      // Soft interim: don't paint red yet, don't paint "current" (no premature highlight)
+      if (softInterim) {
+        // Leave expected as pending/partial — consume nothing further
+        break;
+      }
+
+      if (isMeaningfulSpokenToken(sWord) && isClearMismatch(exp, sWord)) {
+        // Real mistake: reveal expected word in red and advance
+        markIncorrect(oi, sWord);
         prevSpoken = sWord;
+        oi++;
         si++;
         continue;
       }
-      // Non-interim unmatched: count as extra noise, stay on word
-      if (isMeaningfulSpokenToken(sWord)) {
-        extra++;
+
+      // Meaningless noise token — drop without advancing Quran cursor
+      if (!isMeaningfulSpokenToken(sWord)) {
+        si++;
+        continue;
       }
-      prevSpoken = sWord;
-      si++;
-      continue;
+
+      // Meaningful but not clear mismatch (borderline): still count extra, stay
+      // on expected word so user can re-say correctly without auto-red.
+      // However for non-interim committed tokens that aren't partial/match,
+      // treat as wrong to honor "don't ignore mistakes".
+      if (!interim || !isLastToken) {
+        markIncorrect(oi, sWord);
+        prevSpoken = sWord;
+        oi++;
+        si++;
+        continue;
+      }
+
+      break;
     }
 
     // 5) Non-strict streaming: optional skip-ahead
@@ -243,7 +326,6 @@ export function matchLive(
       if (commitSkip) {
         markSkipped(oi, foundLater);
         status[foundLater] = "correct";
-        revealMax = Math.max(revealMax, foundLater);
         oi = foundLater + 1;
         prevSpoken = sWord;
         si++;
@@ -267,19 +349,13 @@ export function matchLive(
       continue;
     }
 
-    if (interim && si === spoken.length - 1) {
-      status[oi] = "current";
-      prevSpoken = sWord;
-      si++;
-      continue;
+    if (softInterim) {
+      // No premature "current" highlight of unspoken word
+      break;
     }
 
     // Soft incorrect on current only (no jump)
-    status[oi] = "incorrect";
-    notes[oi] =
-      "المتوقع «" + flat[oi].text + "» · سمعت «" + sWord + "»";
-    lastMessage = notes[oi];
-    revealMax = Math.max(revealMax, oi);
+    markIncorrect(oi, sWord);
     prevSpoken = sWord;
     oi++;
     si++;
@@ -289,19 +365,21 @@ export function matchLive(
     extra += spoken.slice(si).filter((w) => isMeaningfulSpokenToken(w)).length;
   }
 
-  if (oi < total && status[oi] === "pending") {
-    status[oi] = "current";
-  }
+  // CRITICAL: do NOT set status[oi] = "current".
+  // That was the premature-reveal/highlight of word N+1 after N was spoken.
+  // Cursor is reported only via `cursor` / currentAyah for navigation.
 
   const display: LiveDisplayWord[] = flat.map((w, i) => {
     const st = status[i];
+    // Revealed ONLY after the user uttered something judged for this word
     const confirmed =
       st === "correct" || st === "missing" || st === "incorrect";
     return {
       text: w.text,
       ayahNumber: w.ayahNumber,
       globalIndex: i,
-      status: st,
+      // Map residual "current"/"partial" to non-revealing statuses for display
+      status: st === "current" ? "pending" : st,
       revealed: confirmed,
       note: notes[i],
     };
@@ -319,7 +397,8 @@ export function matchLive(
 
   for (const a of stream) {
     const words = byAyah.get(a.ayahNumber) || [];
-    if (words.some((w) => w.revealed || w.status === "current" || w.status === "partial")) {
+    // Advance ayah focus when any word was judged, or when cursor sits here
+    if (words.some((w) => w.revealed)) {
       revealedUpToAyah = a.ayahNumber;
       currentAyah = a.ayahNumber;
     }

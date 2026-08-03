@@ -142,10 +142,9 @@ function DirectSessionInner() {
     return Math.round((done / liveWords.length) * 100);
   }, [liveWords]);
 
-  const cursorWord = useMemo(
-    () => liveWords.find((w) => w.status === "current" || w.status === "partial"),
-    [liveWords]
-  );
+  /** Internal match cursor (next expected word). Never used for premature visual reveal. */
+  const [matchCursor, setMatchCursor] = useState(0);
+  const matchCursorRef = useRef(0);
 
   const applyTranscript = useCallback(
     (text: string) => {
@@ -158,10 +157,12 @@ function DirectSessionInner() {
       setLiveWords(result.display);
       setAccuracy(result.stats.accuracy);
       setCurrentAyah(result.currentAyah);
-      // Auto-clear one-shot hint when user advances past it
-      if (hintOn && result.cursor > (cursorWord?.globalIndex ?? -1)) {
+      setMatchCursor(result.cursor);
+      // Auto-clear one-shot hint when user advances past the hinted word
+      if (hintOn && result.cursor > matchCursorRef.current) {
         setHintOn(false);
       }
+      matchCursorRef.current = result.cursor;
 
       if (
         result.display.length > 0 &&
@@ -191,7 +192,7 @@ function DirectSessionInner() {
         });
       }
     },
-    [wordStream, toAyah, surahNumber, fromAyah, hintOn, cursorWord?.globalIndex]
+    [wordStream, toAyah, surahNumber, fromAyah, hintOn]
   );
 
   const killSpeech = useCallback(() => {
@@ -627,18 +628,21 @@ function DirectSessionInner() {
               : "ابدأ التسميع";
 
   function renderWord(w: LiveDisplayWord) {
-    const isCursor =
-      w.status === "current" || w.status === "partial";
-    const showHint = hintOn && isCursor;
-    const visible =
-      showAllText ||
+    /**
+     * Strict UX:
+     * - Never auto-reveal or gold-highlight the next word just because prior matched.
+     * - Reveal only after the user spoke that word (correct green / incorrect red).
+     * - Explicit «تلميح» may peek the single next expected word only.
+     */
+    const isJudged =
       w.status === "correct" ||
       w.status === "incorrect" ||
-      w.status === "missing" ||
-      showHint;
+      w.status === "missing";
+    const showHint = hintOn && w.globalIndex === matchCursor && !isJudged;
+    const visible = showAllText || isJudged || showHint;
 
     if (!visible) {
-      // Hidden / watermark placeholder
+      // Hidden / watermark placeholder — no cursor gold on unspoken words
       return (
         <span
           key={w.globalIndex}
@@ -657,11 +661,11 @@ function DirectSessionInner() {
           "mx-0.5 inline-block transition-colors duration-100 font-[family-name:var(--font-quran)]",
           w.status === "correct" &&
             "text-emerald-600 dark:text-emerald-400 font-semibold",
-          isCursor && "text-[#D4AF37] underline decoration-[#D4AF37]/50",
+          showHint && "text-[#D4AF37] underline decoration-[#D4AF37]/50",
           (w.status === "incorrect" || w.status === "missing") &&
             "text-red-500 font-medium",
           showAllText &&
-            w.status === "pending" &&
+            !isJudged &&
             "text-muted-foreground/50"
         )}
       >

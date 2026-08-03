@@ -22,6 +22,7 @@ export type ContinuousEngine = "webspeech" | "wasm-whisper";
 export type ContinuousStartOpts = {
   preserveBuffer?: boolean;
   onModelProgress?: (pct: number, status: string) => void;
+  onPhase?: (phase: "mic" | "model" | "ready") => void;
   /** Force engine (tests) */
   forceEngine?: ContinuousEngine;
 };
@@ -59,11 +60,20 @@ export class ContinuousArabicSpeech {
 
     if (this.engine === "wasm-whisper") {
       this.wasm = this.wasm || new WasmWhisperSpeechSession();
-      const r = await this.wasm.start(handlers, {
-        preserveBuffer: opts?.preserveBuffer,
-        onModelProgress: opts?.onModelProgress,
-      });
-      return { ...r, engine: this.engine };
+      try {
+        const r = await this.wasm.start(handlers, {
+          preserveBuffer: opts?.preserveBuffer,
+          onModelProgress: opts?.onModelProgress,
+          onPhase: opts?.onPhase,
+        });
+        return { ...r, engine: this.engine };
+      } catch (e) {
+        return {
+          ok: false,
+          error: e instanceof Error ? e.message : String(e),
+          engine: this.engine,
+        };
+      }
     }
 
     // Desktop Web Speech — continuousAutoResume + optional mic lock

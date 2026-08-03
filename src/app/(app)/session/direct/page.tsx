@@ -46,7 +46,13 @@ import {
 import { formatArabicNumber, cn } from "@/lib/utils";
 import { saveSurahRecitationProgress } from "@/lib/quran/recitation-progress";
 
-type Phase = "idle" | "listening" | "paused" | "done" | "loading_model";
+type Phase =
+  | "idle"
+  | "listening"
+  | "paused"
+  | "done"
+  | "loading_model"
+  | "requesting_mic";
 
 export default function DirectSessionPage() {
   return (
@@ -247,6 +253,15 @@ function DirectSessionInner() {
   }
 
   async function startListening(preserve: boolean) {
+    // Prevent double-tap infinite loading
+    if (
+      phaseRef.current === "loading_model" ||
+      phaseRef.current === "requesting_mic"
+    ) {
+      setStatusMsg("التحضير جارٍ… لا تضغط مراراً. إن طال الانتظار أعد تحميل الصفحة.");
+      return;
+    }
+
     setSpeechError(null);
     setStatusMsg(null);
     setReport(null);
@@ -267,55 +282,90 @@ function DirectSessionInner() {
 
     if (!speechRef.current) speechRef.current = new ContinuousArabicSpeech();
 
-    if (eng === "wasm-whisper") {
-      setPhase("loading_model");
-      setModelPct(0);
-      setModelStatus("تحضير المحرك المجاني…");
-    }
+    // Mic first phase is inside wasm start; show requesting_mic immediately
+    setPhase("requesting_mic");
+    setModelStatus("طلب إذن الميكروفون…");
+    setModelPct(0);
 
-    const r = await speechRef.current.start(speechHandlers(), {
-      preserveBuffer: preserve,
-      onModelProgress: (pct, status) => {
-        setModelPct(pct);
-        setModelStatus(status);
-      },
-    });
+    try {
+      const r = await speechRef.current.start(speechHandlers(), {
+        preserveBuffer: preserve,
+        onPhase: (p) => {
+          if (p === "mic") {
+            setPhase("requesting_mic");
+            setModelStatus("طلب إذن الميكروفون…");
+          } else if (p === "model") {
+            setPhase("loading_model");
+            setModelStatus("تحميل/تجهيز النموذج…");
+          }
+        },
+        onModelProgress: (pct, status) => {
+          setPhase("loading_model");
+          setModelPct(pct);
+          setModelStatus(status);
+        },
+      });
 
-    if (!r.ok) {
-      setSpeechError(r.error || "تعذّر بدء الميكروفون");
+      if (!r.ok) {
+        setSpeechError(
+          r.error ||
+            "تعذّر بدء التسميع. التفاصيل: فشل غير معروف — أعد التحميل."
+        );
+        setPhase("idle");
+        setModelStatus(null);
+        return;
+      }
+
+      setEngineLabel(
+        r.engine === "wasm-whisper"
+          ? "محرك مجاني مستمر (Whisper داخل المتصفح)"
+          : "محرك المتصفح (Web Speech)"
+      );
+      setModelStatus(null);
+      setModelPct(100);
+      setPhase("listening");
+      if (r.engine === "wasm-whisper") {
+        setStatusMsg(
+          "المايك مفتوح باستمرار. التعرّف يعمل داخل جهازك مجاناً (نوافذ قصيرة)."
+        );
+      }
+    } catch (e) {
+      const msg =
+        e instanceof Error ? e.message : "انهيار صامت أثناء التشغيل";
+      setSpeechError("خطأ: " + msg);
       setPhase("idle");
       setModelStatus(null);
-      return;
-    }
-
-    setEngineLabel(
-      r.engine === "wasm-whisper"
-        ? "محرك مجاني مستمر (Whisper داخل المتصفح) — بلا نغمات"
-        : "محرك المتصفح (Web Speech)"
-    );
-    setModelStatus(null);
-    setPhase("listening");
-    if (r.engine === "wasm-whisper") {
-      setStatusMsg(
-        "الاستماع مستمر مجاناً داخل جهازك. أول مرة قد تُحمَّل ملفات النموذج ثم تُخزَّن في المتصفح."
-      );
     }
   }
 
   async function continueListening() {
+    if (
+      phaseRef.current === "loading_model" ||
+      phaseRef.current === "requesting_mic"
+    ) {
+      return;
+    }
     setSpeechError(null);
     setStatusMsg(null);
     if (!speechRef.current) {
       await startListening(true);
       return;
     }
-    const r = await speechRef.current.resume();
-    if (!r.ok) {
-      // Full restart with preserve
-      await startListening(true);
-      return;
+    setPhase("requesting_mic");
+    try {
+      const r = await speechRef.current.resume();
+      if (!r.ok) {
+        await startListening(true);
+        return;
+      }
+      setPhase("listening");
+    } catch (e) {
+      setSpeechError(
+        "فشل الاستئناف: " +
+          (e instanceof Error ? e.message : String(e))
+      );
+      setPhase("paused");
     }
-    setPhase("listening");
   }
 
   /** Explicit user pause */
@@ -457,8 +507,11 @@ function DirectSessionInner() {
     );
   }
 
+  const busy =
+    phase === "loading_model" || phase === "requesting_mic";
+
   function onPrimaryAction() {
-    if (phase === "loading_model") return;
+    if (busy) return;
     if (phase === "listening") {
       stopListening();
       return;
@@ -475,15 +528,17 @@ function DirectSessionInner() {
   }
 
   const primaryLabel =
-    phase === "loading_model"
-      ? "جاري التحميل…"
-      : phase === "listening"
-        ? "إيقاف"
-        : phase === "paused"
-          ? "متابعة التسميع"
-          : phase === "done"
-            ? "العودة للرئيسية"
-            : "ابدأ التسميع";
+    phase === "requesting_mic"
+      ? "طلب الميكروفون…"
+      : phase === "loading_model"
+        ? "تحميل المحرك…"
+        : phase === "listening"
+          ? "إيقاف"
+          : phase === "paused"
+            ? "متابعة التسميع"
+            : phase === "done"
+              ? "العودة للرئيسية"
+              : "ابدأ التسميع";
 
   function renderWord(w: LiveDisplayWord) {
     const isCursor =
@@ -608,6 +663,7 @@ function DirectSessionInner() {
             <Button
               type="button"
               variant={phase === "listening" ? "outline" : "premium"}
+              disabled={busy}
               className={cn(
                 "h-12 flex-1 text-base font-bold gap-2 rounded-xl",
                 phase !== "listening" &&
@@ -634,13 +690,29 @@ function DirectSessionInner() {
               <> · {engineLabel}</>
             )}
           </p>
-          {phase === "loading_model" && (
+          {(phase === "loading_model" || phase === "requesting_mic") && (
             <div className="space-y-1">
-              <Progress value={modelPct} className="h-1.5" />
+              <Progress
+                value={
+                  phase === "requesting_mic"
+                    ? 8
+                    : Math.max(8, Math.min(100, modelPct))
+                }
+                className="h-1.5"
+              />
               <p className="text-center text-[11px] text-[#D4AF37]">
-                {modelStatus || "تحميل المحرك المجاني…"} {modelPct}%
+                {modelStatus ||
+                  (phase === "requesting_mic"
+                    ? "طلب إذن الميكروفون…"
+                    : "تحميل المحرك…")}{" "}
+                {phase === "loading_model" ? `${modelPct}%` : ""}
               </p>
             </div>
+          )}
+          {speechError && (
+            <p className="text-center text-[11px] text-red-500 break-words px-1">
+              {speechError}
+            </p>
           )}
           {engineLabel && phase === "idle" && (
             <p className="text-center text-[10px] text-muted-foreground">

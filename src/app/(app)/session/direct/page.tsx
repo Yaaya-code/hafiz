@@ -222,14 +222,60 @@ function DirectSessionInner() {
     };
   }, [killSpeech]);
 
+  /**
+   * Safety watchdog: never leave the user on loading_model / requesting_mic forever.
+   * Engine-level timeouts should fire first; this is a last-resort UI unlock.
+   */
+  useEffect(() => {
+    if (phase !== "loading_model" && phase !== "requesting_mic") return;
+    const ms = phase === "requesting_mic" ? 35_000 : 210_000;
+    const t = window.setTimeout(() => {
+      if (
+        phaseRef.current !== "loading_model" &&
+        phaseRef.current !== "requesting_mic"
+      ) {
+        return;
+      }
+      try {
+        speechRef.current?.dispose();
+      } catch {
+        /* ignore */
+      }
+      speechRef.current = null;
+      setSpeechError(
+        phase === "requesting_mic"
+          ? "انتهت مهلة الميكروفون من الواجهة. اسمح بالإذن إن طُلب، ثم أعد «ابدأ التسميع»."
+          : "انتهت مهلة تحميل المحرك من الواجهة. غالباً شبكة بطيئة أو ذاكرة منخفضة. أعد المحاولة بعد إغلاق تبويبات أخرى."
+      );
+      setPhase("idle");
+      setModelStatus(null);
+    }, ms);
+    return () => window.clearTimeout(t);
+  }, [phase]);
+
   function speechHandlers() {
     return {
       onInterim: (t: string) => applyTranscript(t),
       onFinal: (t: string) => applyTranscript(t),
       onError: (msg: string) => {
-        if (/ميكروفون|اسمح|غير مدعوم|لا يوجد/.test(msg)) {
+        // ALWAYS surface real error text — never leave user on infinite loading
+        const busyPhase =
+          phaseRef.current === "loading_model" ||
+          phaseRef.current === "requesting_mic";
+        const hard =
+          busyPhase ||
+          /ميكروفون|اسمح|غير مدعوم|لا يوجد|مهلة|فشل|خطأ|memory|OOM|رفض/i.test(
+            msg
+          );
+        if (hard) {
           setSpeechError(msg);
-          setPhase("paused");
+          setStatusMsg(null);
+          if (busyPhase) {
+            setPhase("idle");
+            setModelStatus(null);
+          } else if (phaseRef.current === "listening") {
+            setPhase("paused");
+          }
         } else {
           setStatusMsg(msg);
         }
@@ -252,13 +298,31 @@ function DirectSessionInner() {
     };
   }
 
+  /** Hard cancel during mic/model prep — frees locks and leaves idle with message */
+  function cancelPreparing() {
+    try {
+      speechRef.current?.dispose();
+    } catch {
+      /* ignore */
+    }
+    speechRef.current = null;
+    setPhase("idle");
+    setModelStatus(null);
+    setModelPct(0);
+    setSpeechError(
+      "أُلغي التحضير. إن تكرّر التعليق: أعد تحميل الصفحة، أغلق تبويبات أخرى لتوفير الذاكرة، ثم اضغط «ابدأ» مرة واحدة."
+    );
+  }
+
   async function startListening(preserve: boolean) {
-    // Prevent double-tap infinite loading
+    // Prevent double-tap stacking another start while first is mid-flight
     if (
       phaseRef.current === "loading_model" ||
       phaseRef.current === "requesting_mic"
     ) {
-      setStatusMsg("التحضير جارٍ… لا تضغط مراراً. إن طال الانتظار أعد تحميل الصفحة.");
+      setStatusMsg(
+        "التحضير جارٍ… لا تضغط مراراً. استخدم «إلغاء» إن طال الانتظار."
+      );
       return;
     }
 
@@ -276,7 +340,9 @@ function DirectSessionInner() {
       }
     }
     if (eng === "wasm-whisper" && !isWasmSpeechSupported()) {
-      setSpeechError("محرك التعرّف المجاني يحتاج متصفحاً حديثاً وHTTPS.");
+      setSpeechError(
+        "محرك التعرّف المجاني يحتاج متصفحاً حديثاً واتصالاً آمناً (HTTPS)."
+      );
       return;
     }
 
@@ -285,7 +351,8 @@ function DirectSessionInner() {
     // Mic first phase is inside wasm start; show requesting_mic immediately
     setPhase("requesting_mic");
     setModelStatus("طلب إذن الميكروفون…");
-    setModelPct(0);
+    // Keep last known % if model already partially loaded (preload / prior attempt)
+    setModelPct((p) => (eng === "wasm-whisper" && p > 0 ? p : 0));
 
     try {
       const r = await speechRef.current.start(speechHandlers(), {
@@ -297,6 +364,9 @@ function DirectSessionInner() {
           } else if (p === "model") {
             setPhase("loading_model");
             setModelStatus("تحميل/تجهيز النموذج…");
+          } else if (p === "ready") {
+            setModelStatus("المايك جاهز…");
+            setModelPct(100);
           }
         },
         onModelProgress: (pct, status) => {
@@ -331,10 +401,20 @@ function DirectSessionInner() {
       }
     } catch (e) {
       const msg =
-        e instanceof Error ? e.message : "انهيار صامت أثناء التشغيل";
+        e instanceof Error
+          ? e.message
+          : typeof e === "string"
+            ? e
+            : "انهيار صامت أثناء التشغيل (التفاصيل غير متاحة)";
       setSpeechError("خطأ: " + msg);
       setPhase("idle");
       setModelStatus(null);
+      try {
+        speechRef.current?.dispose();
+      } catch {
+        /* ignore */
+      }
+      speechRef.current = null;
     }
   }
 
@@ -352,19 +432,25 @@ function DirectSessionInner() {
       return;
     }
     setPhase("requesting_mic");
+    setModelStatus("إعادة فتح الميكروفون…");
     try {
       const r = await speechRef.current.resume();
       if (!r.ok) {
+        setSpeechError(
+          r.error || "فشل الاستئناف — سيعاد التشغيل الكامل."
+        );
         await startListening(true);
         return;
       }
       setPhase("listening");
+      setModelStatus(null);
     } catch (e) {
       setSpeechError(
         "فشل الاستئناف: " +
           (e instanceof Error ? e.message : String(e))
       );
       setPhase("paused");
+      setModelStatus(null);
     }
   }
 
@@ -660,6 +746,16 @@ function DirectSessionInner() {
                 إنهاء
               </Button>
             )}
+            {busy && (
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-12 px-3 text-xs shrink-0 text-red-500"
+                onClick={cancelPreparing}
+              >
+                إلغاء
+              </Button>
+            )}
             <Button
               type="button"
               variant={phase === "listening" ? "outline" : "premium"}
@@ -691,28 +787,41 @@ function DirectSessionInner() {
             )}
           </p>
           {(phase === "loading_model" || phase === "requesting_mic") && (
-            <div className="space-y-1">
+            <div className="space-y-1 rounded-lg border border-[#D4AF37]/25 bg-[#D4AF37]/5 px-2 py-2">
               <Progress
                 value={
                   phase === "requesting_mic"
                     ? 8
-                    : Math.max(8, Math.min(100, modelPct))
+                    : Math.max(5, Math.min(100, modelPct))
                 }
-                className="h-1.5"
+                className="h-2"
               />
-              <p className="text-center text-[11px] text-[#D4AF37]">
+              <p className="text-center text-[11px] text-[#D4AF37] font-medium">
                 {modelStatus ||
                   (phase === "requesting_mic"
                     ? "طلب إذن الميكروفون…"
-                    : "تحميل المحرك…")}{" "}
-                {phase === "loading_model" ? `${modelPct}%` : ""}
+                    : "تحميل المحرك…")}
+                {phase === "loading_model" ? ` · ${modelPct}%` : ""}
+              </p>
+              <p className="text-center text-[10px] text-muted-foreground">
+                لا تغلق الصفحة. النسبة لا تتراجع. إن طال الانتظار اضغط «إلغاء».
               </p>
             </div>
           )}
-          {speechError && (
-            <p className="text-center text-[11px] text-red-500 break-words px-1">
-              {speechError}
+          {statusMsg && !speechError && (
+            <p className="text-center text-[11px] text-muted-foreground break-words px-1">
+              {statusMsg}
             </p>
+          )}
+          {speechError && (
+            <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-2 py-2 space-y-1">
+              <p className="text-center text-[11px] text-red-600 dark:text-red-400 break-words font-medium">
+                {speechError}
+              </p>
+              <p className="text-center text-[10px] text-muted-foreground">
+                هذه رسالة الخطأ الحقيقية من المحرك — ليس تعليقاً صامتاً.
+              </p>
+            </div>
           )}
           {engineLabel && phase === "idle" && (
             <p className="text-center text-[10px] text-muted-foreground">

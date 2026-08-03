@@ -1,10 +1,14 @@
 /**
  * Free forever continuous STT in the browser (Zero cloud cost).
  *
- * Critical mobile constraints fixed here:
- * 1) getUserMedia MUST run immediately on user gesture (before long model load)
- * 2) Progress is monotonic + aggregated across parallel model files
- * 3) start() is re-entrant safe with clear timeouts and errors
+ * Root causes fixed (mobile):
+ * 1) Progress thrash: HF reports per-file 0–100; we aggregate by BYTES
+ *    and enforce a monotonic UI percentage (never goes backwards).
+ * 2) Eternal hang after "done": getUserMedia MUST run on the user gesture
+ *    BEFORE the long model download. Post-gesture getUserMedia hangs on
+ *    many Android Chrome builds with no reject.
+ * 3) Silent hangs: every await has a timeout; start is re-entrant safe;
+ *    failures always return { ok:false, error } instead of spinning forever.
  */
 
 import type { SpeechHandlers } from "./speech-recognition";
@@ -21,14 +25,21 @@ const WINDOW_SEC = 5;
 const TICK_SEC = 2.5;
 const MAX_BUFFER_SEC = 28;
 const MODEL_ID = "Xenova/whisper-tiny";
+/** Whole pipeline including dynamic import of transformers + ONNX init */
 const PIPELINE_TIMEOUT_MS = 180_000;
 const MIC_TIMEOUT_MS = 25_000;
+const AUDIO_RESUME_MS = 8_000;
+/** Hard cap for an entire start() call (mic + model + wire audio) */
+const START_TIMEOUT_MS = 200_000;
 
 let sharedPipeline: AsrPipeline | null = null;
 let pipelineLoading: Promise<AsrPipeline> | null = null;
 /** Monotonic 0–100 for UI */
 let loadProgress = 0;
-const fileProgress = new Map<string, number>();
+/** Per-file byte tracking for true aggregate progress */
+const fileBytes = new Map<string, { loaded: number; total: number }>();
+/** Fallback when only percentage is available */
+const filePct = new Map<string, number>();
 const progressListeners = new Set<ProgressCb>();
 
 export function isWhisperPipelineReady(): boolean {
@@ -51,34 +62,33 @@ function emitProgress(pct: number, status: string) {
   }
 }
 
-function normalizeFileProgress(p: {
-  progress?: number;
-  loaded?: number;
-  total?: number;
-}): number {
-  if (
-    typeof p.loaded === "number" &&
-    typeof p.total === "number" &&
-    p.total > 0
-  ) {
-    return Math.min(100, (p.loaded / p.total) * 100);
-  }
-  if (typeof p.progress === "number") {
-    // HF may report 0–1 or 0–100
-    return p.progress <= 1 ? p.progress * 100 : p.progress;
-  }
-  return 0;
-}
-
 function recomputeAggregateProgress(status: string) {
-  if (fileProgress.size === 0) {
+  // Prefer byte totals when we have them (correct multi-file aggregation)
+  let loadedSum = 0;
+  let totalSum = 0;
+  let hasBytes = false;
+  for (const v of fileBytes.values()) {
+    if (v.total > 0) {
+      hasBytes = true;
+      loadedSum += Math.min(v.loaded, v.total);
+      totalSum += v.total;
+    }
+  }
+  if (hasBytes && totalSum > 0) {
+    // Reserve 0–3 for library import, 3–95 for files, 95–100 for init
+    const fileShare = (loadedSum / totalSum) * 92;
+    emitProgress(3 + fileShare, status);
+    return;
+  }
+
+  if (filePct.size === 0) {
     emitProgress(loadProgress, status);
     return;
   }
   let sum = 0;
-  for (const v of fileProgress.values()) sum += v;
-  const avg = sum / fileProgress.size;
-  emitProgress(avg, status);
+  for (const v of filePct.values()) sum += v;
+  const avg = sum / filePct.size;
+  emitProgress(3 + avg * 0.92, status);
 }
 
 function withTimeout<T>(
@@ -118,53 +128,101 @@ async function ensurePipeline(onProgress?: ProgressCb): Promise<AsrPipeline> {
   if (!pipelineLoading) {
     pipelineLoading = (async () => {
       try {
-        emitProgress(1, "تحميل مكتبة التعرّف…");
-        const { pipeline, env } = await import("@huggingface/transformers");
-        env.allowLocalModels = false;
-        env.useBrowserCache = true;
+        emitProgress(Math.max(loadProgress, 1), "تحميل مكتبة التعرّف…");
 
-        emitProgress(Math.max(loadProgress, 3), "تحميل نموذج Whisper المجاني…");
-
+        // Timeout covers import + pipeline() + WASM/ONNX warm-up
         const transcriber = await withTimeout(
-          pipeline("automatic-speech-recognition", MODEL_ID, {
-            progress_callback: (p: {
-              status?: string;
-              progress?: number;
-              file?: string;
-              name?: string;
-              loaded?: number;
-              total?: number;
-            }) => {
-              const fileKey = p.file || p.name || p.status || "file";
-              if (p.status === "done") {
-                fileProgress.set(fileKey, 100);
-                recomputeAggregateProgress(`اكتمل: ${fileKey}`);
-                return;
+          (async () => {
+            const { pipeline, env } = await import(
+              "@huggingface/transformers"
+            );
+            env.allowLocalModels = false;
+            env.useBrowserCache = true;
+
+            emitProgress(
+              Math.max(loadProgress, 3),
+              "تحميل نموذج Whisper المجاني…"
+            );
+
+            const pipe = await pipeline(
+              "automatic-speech-recognition",
+              MODEL_ID,
+              {
+                progress_callback: (p: {
+                  status?: string;
+                  progress?: number;
+                  file?: string;
+                  name?: string;
+                  loaded?: number;
+                  total?: number;
+                }) => {
+                  // Stable key: prefer file path; never use status alone
+                  const fileKey =
+                    (typeof p.file === "string" && p.file) ||
+                    (typeof p.name === "string" && p.name) ||
+                    "model";
+
+                  if (p.status === "done") {
+                    const prev = fileBytes.get(fileKey);
+                    if (prev && prev.total > 0) {
+                      fileBytes.set(fileKey, {
+                        loaded: prev.total,
+                        total: prev.total,
+                      });
+                    } else {
+                      filePct.set(fileKey, 100);
+                    }
+                    recomputeAggregateProgress(`اكتمل: ${shortName(fileKey)}`);
+                    return;
+                  }
+
+                  if (
+                    typeof p.loaded === "number" &&
+                    typeof p.total === "number" &&
+                    p.total > 0
+                  ) {
+                    const prev = fileBytes.get(fileKey);
+                    const loaded = Math.max(prev?.loaded ?? 0, p.loaded);
+                    fileBytes.set(fileKey, { loaded, total: p.total });
+                    recomputeAggregateProgress("تحميل ملفات النموذج…");
+                    return;
+                  }
+
+                  if (
+                    p.status === "progress" ||
+                    typeof p.progress === "number"
+                  ) {
+                    let fp = 0;
+                    if (typeof p.progress === "number") {
+                      // HF may report 0–1 or 0–100
+                      fp = p.progress <= 1 ? p.progress * 100 : p.progress;
+                    }
+                    const prev = filePct.get(fileKey) || 0;
+                    filePct.set(fileKey, Math.max(prev, Math.min(100, fp)));
+                    recomputeAggregateProgress("تحميل ملفات النموذج…");
+                  }
+                },
               }
-              if (
-                p.status === "progress" ||
-                typeof p.progress === "number" ||
-                typeof p.loaded === "number"
-              ) {
-                const fp = normalizeFileProgress(p);
-                // Per-file monotonic
-                const prev = fileProgress.get(fileKey) || 0;
-                fileProgress.set(fileKey, Math.max(prev, fp));
-                recomputeAggregateProgress("تحميل ملفات النموذج…");
-              }
-            },
-          }) as Promise<AsrPipeline>,
+            );
+
+            emitProgress(
+              Math.max(loadProgress, 96),
+              "تهيئة محرك WASM…"
+            );
+            return pipe as unknown as AsrPipeline;
+          })(),
           PIPELINE_TIMEOUT_MS,
-          "انتهت مهلة تحميل النموذج (3 دقائق). تحقق من الشبكة وأعد المحاولة."
+          "انتهت مهلة تحميل النموذج (3 دقائق). تحقق من الشبكة أو الذاكرة وأعد المحاولة."
         );
 
-        sharedPipeline = transcriber as unknown as AsrPipeline;
+        sharedPipeline = transcriber;
         emitProgress(100, "المحرك جاهز");
         return sharedPipeline;
       } catch (e) {
         pipelineLoading = null;
-        fileProgress.clear();
-        // Allow retry; keep loadProgress for debug but don't lock UI
+        fileBytes.clear();
+        filePct.clear();
+        // Keep loadProgress so retry UI can show "استئناف" context; allow retry
         throw e instanceof Error
           ? e
           : new Error("فشل تحميل محرك Whisper المجاني");
@@ -178,6 +236,11 @@ async function ensurePipeline(onProgress?: ProgressCb): Promise<AsrPipeline> {
   } finally {
     if (onProgress) progressListeners.delete(onProgress);
   }
+}
+
+function shortName(path: string): string {
+  const parts = path.split(/[/\\]/);
+  return parts[parts.length - 1] || path;
 }
 
 function mergeTranscript(base: string, next: string): string {
@@ -222,10 +285,18 @@ function formatErr(e: unknown): string {
     if (e.name === "NotFoundError") {
       return "لم يُعثر على ميكروفون.";
     }
+    if (e.name === "NotReadableError" || e.name === "AbortError") {
+      return `الميكروفون مشغول أو أُلغي الطلب (${e.name}). أغلق تطبيقات أخرى تستخدم المايك ثم أعد المحاولة.`;
+    }
     return `خطأ الميكروفون: ${e.name} — ${e.message}`;
   }
   if (e instanceof Error) {
-    return e.message || e.name || "خطأ غير معروف";
+    // Out-of-memory / WASM compile often surfaces as vague RangeError / InternalError
+    const m = e.message || e.name || "خطأ غير معروف";
+    if (/memory|out of memory|OOM|Array buffer|allocation/i.test(m)) {
+      return `نفدت ذاكرة المتصفح أثناء تحميل النموذج. أغلق تبويبات أخرى وأعد المحاولة. التفاصيل: ${m}`;
+    }
+    return m;
   }
   return String(e || "خطأ غير معروف");
 }
@@ -249,6 +320,8 @@ export class WasmWhisperSpeechSession {
   private lastEmitted = "";
   /** Prevent double-start hang */
   private startLock = false;
+  /** Bumps on dispose/stop so in-flight start aborts cleanly */
+  private startEpoch = 0;
 
   async start(
     handlers: SpeechHandlers = {},
@@ -263,10 +336,11 @@ export class WasmWhisperSpeechSession {
       return {
         ok: false,
         error:
-          "التشغيل قيد التحضير بالفعل. انتظر قليلاً أو أعد تحميل الصفحة إن استمر التعليق.",
+          "التشغيل قيد التحضير بالفعل. انتظر أو اضغط «إلغاء» إن ظهر، أو أعد تحميل الصفحة.",
       };
     }
     this.startLock = true;
+    const epoch = ++this.startEpoch;
 
     if (typeof window === "undefined") {
       this.startLock = false;
@@ -289,101 +363,144 @@ export class WasmWhisperSpeechSession {
     this.wantContinue = true;
     this.running = false;
 
+    const aborted = () =>
+      this.destroyed || epoch !== this.startEpoch || !this.wantContinue;
+
     try {
-      /**
-       * CRITICAL: getUserMedia FIRST while still in user-gesture chain.
-       * Awaiting model download before getUserMedia causes permanent hang
-       * on many Android Chrome builds (permission never prompts / never resolves).
-       */
-      opts?.onPhase?.("mic");
-      const stream = await withTimeout(
-        navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            channelCount: 1,
-          },
-          video: false,
-        }),
-        MIC_TIMEOUT_MS,
-        "انتهت مهلة طلب الميكروفون. اسمح بالإذن إن ظهر، أو أعد تحميل الصفحة."
+      const result = await withTimeout(
+        this.runStartSequence(opts, aborted),
+        START_TIMEOUT_MS,
+        "انتهت المهلة الكلية لبدء التسميع (أكثر من 3 دقائق). أعد المحاولة بعد التحقق من الشبكة والذاكرة."
       );
-      this.stream = stream;
 
-      // Then load model (mic already open — gesture constraint satisfied)
-      opts?.onPhase?.("model");
-      await ensurePipeline(opts?.onModelProgress);
-
-      const W = window as unknown as {
-        AudioContext?: typeof AudioContext;
-        webkitAudioContext?: typeof AudioContext;
-      };
-      const Ctx = W.AudioContext || W.webkitAudioContext;
-      if (!Ctx) {
+      if (aborted()) {
         this.cleanupAudio();
         this.startLock = false;
-        return { ok: false, error: "AudioContext غير مدعوم على هذا المتصفح." };
+        return { ok: false, error: "تم إلغاء التشغيل." };
       }
-
-      const ctx = new Ctx();
-      this.audioCtx = ctx;
-      this.inputRate = ctx.sampleRate || 48000;
-      if (ctx.state === "suspended") {
-        await withTimeout(
-          ctx.resume(),
-          8000,
-          "تعذّر تنشيط AudioContext. اضغط الشاشة مرة ثم أعد «ابدأ»."
-        );
-      }
-
-      const source = ctx.createMediaStreamSource(stream);
-      this.source = source;
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      this.processor = processor;
-
-      processor.onaudioprocess = (ev) => {
-        if (!this.wantContinue || this.destroyed) return;
-        const input = ev.inputBuffer.getChannelData(0);
-        const copy = new Float32Array(input.length);
-        copy.set(input);
-        this.samples.push(copy);
-        this.sampleCount += copy.length;
-        const maxSamples = Math.floor(MAX_BUFFER_SEC * this.inputRate);
-        while (this.sampleCount > maxSamples && this.samples.length > 1) {
-          const dropped = this.samples.shift();
-          this.sampleCount -= dropped?.length || 0;
-        }
-      };
-
-      const gain = ctx.createGain();
-      gain.gain.value = 0;
-      this.gainNode = gain;
-      source.connect(processor);
-      processor.connect(gain);
-      gain.connect(ctx.destination);
-
-      this.running = true;
-      this.wantContinue = true;
-      this.handlers.onListeningChange?.(true);
-      opts?.onPhase?.("ready");
-
-      if (this.tickTimer) clearInterval(this.tickTimer);
-      this.tickTimer = setInterval(() => {
-        void this.runInferenceTick();
-      }, TICK_SEC * 1000);
-      window.setTimeout(() => void this.runInferenceTick(), 1200);
 
       this.startLock = false;
-      return { ok: true };
+      return result;
     } catch (e) {
       this.cleanupAudio();
       this.running = false;
       this.wantContinue = false;
       this.startLock = false;
       const msg = formatErr(e);
-      this.handlers.onError?.(msg);
+      try {
+        this.handlers.onError?.(msg);
+      } catch {
+        /* ignore */
+      }
       return { ok: false, error: msg };
     }
+  }
+
+  private async runStartSequence(
+    opts:
+      | {
+          preserveBuffer?: boolean;
+          onModelProgress?: ProgressCb;
+          onPhase?: (phase: "mic" | "model" | "ready") => void;
+        }
+      | undefined,
+    aborted: () => boolean
+  ): Promise<{ ok: boolean; error?: string }> {
+    /**
+     * CRITICAL: getUserMedia FIRST while still in user-gesture chain.
+     * Awaiting model download before getUserMedia causes permanent hang
+     * on many Android Chrome builds (permission never prompts / never resolves).
+     */
+    opts?.onPhase?.("mic");
+    const stream = await withTimeout(
+      navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          channelCount: 1,
+        },
+        video: false,
+      }),
+      MIC_TIMEOUT_MS,
+      "انتهت مهلة طلب الميكروفون. اسمح بالإذن إن ظهر، أو أعد تحميل الصفحة."
+    );
+    if (aborted()) {
+      stream.getTracks().forEach((t) => t.stop());
+      return { ok: false, error: "تم إلغاء التشغيل." };
+    }
+    this.stream = stream;
+
+    // Then load model (mic already open — gesture constraint satisfied)
+    opts?.onPhase?.("model");
+    await ensurePipeline(opts?.onModelProgress);
+    if (aborted()) {
+      return { ok: false, error: "تم إلغاء التشغيل." };
+    }
+
+    const W = window as unknown as {
+      AudioContext?: typeof AudioContext;
+      webkitAudioContext?: typeof AudioContext;
+    };
+    const Ctx = W.AudioContext || W.webkitAudioContext;
+    if (!Ctx) {
+      this.cleanupAudio();
+      return { ok: false, error: "AudioContext غير مدعوم على هذا المتصفح." };
+    }
+
+    const ctx = new Ctx();
+    this.audioCtx = ctx;
+    this.inputRate = ctx.sampleRate || 48000;
+    if (ctx.state === "suspended") {
+      await withTimeout(
+        ctx.resume(),
+        AUDIO_RESUME_MS,
+        "تعذّر تنشيط AudioContext. اضغط الشاشة مرة ثم أعد «ابدأ»."
+      );
+    }
+    if (aborted()) {
+      return { ok: false, error: "تم إلغاء التشغيل." };
+    }
+
+    const source = ctx.createMediaStreamSource(stream);
+    this.source = source;
+    // ScriptProcessor is deprecated but still the most reliable PCM path on mobile
+    // without a separate AudioWorklet module URL.
+    const processor = ctx.createScriptProcessor(4096, 1, 1);
+    this.processor = processor;
+
+    processor.onaudioprocess = (ev) => {
+      if (!this.wantContinue || this.destroyed) return;
+      const input = ev.inputBuffer.getChannelData(0);
+      const copy = new Float32Array(input.length);
+      copy.set(input);
+      this.samples.push(copy);
+      this.sampleCount += copy.length;
+      const maxSamples = Math.floor(MAX_BUFFER_SEC * this.inputRate);
+      while (this.sampleCount > maxSamples && this.samples.length > 1) {
+        const dropped = this.samples.shift();
+        this.sampleCount -= dropped?.length || 0;
+      }
+    };
+
+    const gain = ctx.createGain();
+    gain.gain.value = 0;
+    this.gainNode = gain;
+    source.connect(processor);
+    processor.connect(gain);
+    gain.connect(ctx.destination);
+
+    this.running = true;
+    this.wantContinue = true;
+    this.handlers.onListeningChange?.(true);
+    opts?.onPhase?.("ready");
+
+    if (this.tickTimer) clearInterval(this.tickTimer);
+    this.tickTimer = setInterval(() => {
+      void this.runInferenceTick();
+    }, TICK_SEC * 1000);
+    window.setTimeout(() => void this.runInferenceTick(), 1200);
+
+    return { ok: true };
   }
 
   private collectWindow(): Float32Array | null {
@@ -443,6 +560,7 @@ export class WasmWhisperSpeechSession {
 
   stop(): string {
     this.wantContinue = false;
+    this.startEpoch += 1;
     this.cleanupAudio();
     this.running = false;
     this.startLock = false;
@@ -452,6 +570,7 @@ export class WasmWhisperSpeechSession {
 
   pauseRecognition(): string {
     this.wantContinue = false;
+    this.startEpoch += 1;
     this.cleanupAudio();
     this.running = false;
     this.startLock = false;
@@ -469,6 +588,7 @@ export class WasmWhisperSpeechSession {
   dispose() {
     this.destroyed = true;
     this.wantContinue = false;
+    this.startEpoch += 1;
     this.cleanupAudio();
     this.running = false;
     this.startLock = false;

@@ -79,17 +79,21 @@ function progressCallback(p: {
   }
 }
 
-async function createPipeline(dtype: "q8" | "fp32"): Promise<AsrPipeline> {
+/**
+ * Mobile ORT/WASM rejects MatMulNBits / DequantizeLinear quant graphs
+ * (Missing required scale … embed_tokens.weight_merged_0_scale).
+ * NEVER try q8/q4/quantized — load full-precision only from the first call.
+ */
+async function createPipelineFp32(): Promise<AsrPipeline> {
   const { pipeline, env } = await import("@huggingface/transformers");
   env.allowLocalModels = false;
   env.useBrowserCache = true;
 
-  emitProgress(3, `تهيئة Whisper (${dtype})…`);
+  emitProgress(3, "تهيئة Whisper (fp32 كامل — بدون ضغط)…");
 
   const pipe = await pipeline("automatic-speech-recognition", MODEL_ID, {
-    // Prefer q8 (faster). Fall back to fp32 if MatMulNBits/quant crashes.
-    quantized: dtype !== "fp32",
-    dtype,
+    quantized: false,
+    dtype: "fp32",
     progress_callback: progressCallback,
   } as Record<string, unknown>);
 
@@ -103,27 +107,9 @@ async function ensureLoaded(): Promise<void> {
   loading = (async () => {
     try {
       emitProgress(1, "تحميل مكتبة التعرّف في الخلفية…");
-
-      // Try q8 first (much faster on phones). On quant/NBits failure → fp32.
-      try {
-        pipelineFn = await createPipeline("q8");
-        activeDtype = "q8";
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (
-          /MatMulNBits|DequantizeLinear|Missing required scale|qdq|quant/i.test(
-            msg
-          )
-        ) {
-          emitProgress(4, "q8 غير متوافق — التحويل إلى fp32…");
-          pipelineFn = await createPipeline("fp32");
-          activeDtype = "fp32";
-        } else {
-          throw e;
-        }
-      }
-
-      emitProgress(100, "المحرك جاهز");
+      pipelineFn = await createPipelineFp32();
+      activeDtype = "fp32";
+      emitProgress(100, "المحرك جاهز (fp32)");
       post({ type: "ready", dtype: activeDtype });
     } catch (e) {
       loading = null;

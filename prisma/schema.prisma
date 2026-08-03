@@ -722,3 +722,53 @@ model MutashabihRecord {
   @@index([type, difficulty])
 }
 
+// ── Dynamic Quiz bank (external-ready, seeded massively) ────────────────
+
+model QuizCategory {
+  id            String     @id @default(cuid())
+  slug          String     @unique
+  nameAr        String
+  descriptionAr String?
+  sortOrder     Int        @default(0)
+  questions     Question[]
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+}
+
+model Question {
+  id            String           @id @default(cuid())
+  categoryId    String
+  category      QuizCategory     @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  /// mcq | fill_blank | true_false
+  type          String
+  prompt        String           @db.Text
+  contextAr     String?          @db.Text
+  /// Correct option id OR fill-blank expected string
+  answer        String           @db.Text
+  explanationAr String?          @db.Text
+  surahNumber   Int?
+  ayahNumber    Int?
+  difficulty    Int              @default(1)
+  source        String?
+  options       QuestionOption[]
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  @@index([categoryId])
+  @@index([surahNumber])
+  @@index([type, difficulty])
+}
+
+model QuestionOption {
+  id         String   @id @default(cuid())
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  /// Stable id used as answer key (e.g. "a","b","c","d" or cuid)
+  key        String
+  text       String   @db.Text
+  sortOrder  Int      @default(0)
+
+  @@unique([questionId, key])
+  @@index([questionId])
+}
+

@@ -9,18 +9,21 @@ describe("Islam Sobhi removal", () => {
     expect(getAvailableQaris().some((q) => q.id === "islam_sobhi")).toBe(
       false
     );
-    expect(getAvailableQaris()).toHaveLength(19);
+    expect(getAvailableQaris()).toHaveLength(20);
   });
 
   it("legacy preference falls back to Alafasy", () => {
     expect(resolvePlayableQariId("islam_sobhi")).toBe("alafasy");
   });
 
-  it("top of list is Alafasy then Minshawi (RTL grid order)", () => {
+  it("RTL grid order: top 10 + Banna + Ghamadi last", () => {
     const list = getAvailableQaris();
     expect(list[0]?.id).toBe("alafasy");
     expect(list[1]?.id).toBe("minshawi");
     expect(list[2]?.id).toBe("husary");
     expect(list[3]?.id).toBe("dosari");
+    expect(list[8]?.id).toBe("banna");
+    expect(list[9]?.id).toBe("neana");
+    expect(list[list.length - 1]?.id).toBe("ghamadi");
   });
 });

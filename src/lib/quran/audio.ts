@@ -1,13 +1,12 @@
 import type { Qari } from "./types";
 
 /**
- * Reciter library — full 114-surah everyayah packs only.
- *
- * Grid is 2 columns RTL: array[0]=top-right, [1]=top-left, [2]=row2-right…
- * Order below is intentional for the Qaris page layout.
+ * Reciter library — 20 qaris.
+ * RTL 2-col grid: [0]=top-right, [1]=top-left, [2]=row2-right…
+ * Order is intentional — do not reorder casually.
  */
 export const QARIS: Qari[] = [
-  // ── Ordered top 10 (RTL 2-col grid) ───────────────────────────────────
+  // ── Top 10 (explicit product order) ───────────────────────────────────
   {
     id: "alafasy",
     nameAr: "مشاري راشد العفاسي",
@@ -90,14 +89,14 @@ export const QARIS: Qari[] = [
     bioAr: "قارئ سعودي بأداء عصري مؤثر — شائع بين الشباب.",
   },
   {
-    id: "ghamadi",
-    nameAr: "سعد الغامدي",
-    nameEn: "Saad Al-Ghamadi",
-    image: "/qaris/ghamadi.jpg",
-    everyAyahFolder: "Ghamadi_40kbps",
+    id: "banna",
+    nameAr: "محمود علي البنا",
+    nameEn: "Mahmoud Ali Al-Banna",
+    image: "/qaris/default-portrait.jpg",
+    everyAyahFolder: "banna_48kbps",
     style: "مرتل",
-    bitrate: "40",
-    bioAr: "من أكثر الأصوات استماعاً في العالم العربي.",
+    bitrate: "48",
+    bioAr: "الشيخ محمود علي البنا — صوت مصري كلاسيكي عذب · تسجيل كامل على everyayah.",
   },
   {
     id: "neana",
@@ -109,7 +108,7 @@ export const QARIS: Qari[] = [
     bitrate: "128",
     bioAr: "قارئ مصري بصوت هادئ واضح — مناسب للحفظ والتكرار.",
   },
-  // ── Remaining 9 (any order after top 10) ──────────────────────────────
+  // ── Remaining 9 (any order) — Ghamadi MUST be last (#20) ─────────────
   {
     id: "sudais",
     nameAr: "عبد الرحمن السديس",
@@ -200,20 +199,25 @@ export const QARIS: Qari[] = [
     bitrate: "64",
     bioAr: "قارئ يمني — صوت عذب مناسب للاستماع الطويل.",
   },
+  // #20 last — سعد الغامدي
+  {
+    id: "ghamadi",
+    nameAr: "سعد الغامدي",
+    nameEn: "Saad Al-Ghamadi",
+    image: "/qaris/ghamadi.jpg",
+    everyAyahFolder: "Ghamadi_40kbps",
+    style: "مرتل",
+    bitrate: "40",
+    bioAr: "من أكثر الأصوات استماعاً في العالم العربي.",
+  },
 ];
 
-/**
- * Qari ids that must never appear in UI / playback preference.
- * - islam_sobhi: removed from product library (surah-mode partial pack)
- * - mustafa_ismail / hazza: incomplete CDN packs
- */
 export const INCOMPLETE_QARI_IDS = new Set([
   "mustafa_ismail",
   "hazza_al_balushi",
   "islam_sobhi",
 ]);
 
-/** Audit notes for procurement decisions (AI collaborators / product). */
 export const QARI_CDN_AUDIT: Record<
   string,
   { complete114: boolean; source: string; note: string }
@@ -221,20 +225,22 @@ export const QARI_CDN_AUDIT: Record<
   mustafa_ismail: {
     complete114: false,
     source: "everyayah.com/data/Mustafa_Ismail_48kbps",
-    note: "~4220 missing ayah files — excluded from getAvailableQaris()",
+    note: "~4220 missing ayah files — excluded",
   },
   islam_sobhi: {
     complete114: false,
-    source:
-      "https://server14.mp3quran.net/islam/Rewayat-Hafs-A-n-Assem/ (109 surahs)",
-    note: "Removed from UI library — partial surah pack; excluded via INCOMPLETE_QARI_IDS.",
+    source: "mp3quran surah pack",
+    note: "Removed from UI library",
   },
   hazza_al_balushi: {
     complete114: false,
-    source:
-      "everyayah.com (absent) / mp3quran.net/eng/hazza (surah-level) / way2quran ~98 surahs",
-    note:
-      "Hazza Al Balushi: no complete 114-surah V2V pack. Excluded from getAvailableQaris().",
+    source: "absent V2V",
+    note: "Excluded",
+  },
+  banna: {
+    complete114: true,
+    source: "everyayah.com/data/banna_48kbps",
+    note: "Mahmoud Ali Al-Banna full pack",
   },
 };
 
@@ -242,15 +248,10 @@ export function getQari(id: string): Qari | undefined {
   return QARIS.find((q) => q.id === id);
 }
 
-/** Reciters offered in UI (excludes known broken / removed packs). */
 export function getAvailableQaris(): Qari[] {
   return QARIS.filter((q) => !INCOMPLETE_QARI_IDS.has(q.id));
 }
 
-/**
- * Resolve a preferred qari id to a playable one.
- * Falls back to Alafasy if the saved preference was removed.
- */
 export function resolvePlayableQariId(preferredId?: string | null): string {
   if (
     preferredId &&
@@ -259,7 +260,6 @@ export function resolvePlayableQariId(preferredId?: string | null): string {
   ) {
     return preferredId;
   }
-  // Legacy preference for removed Islam Sobhi
   if (preferredId === "islam_sobhi") return "alafasy";
   return "alafasy";
 }
@@ -274,9 +274,6 @@ function everyayahVerseUrl(
   return `https://everyayah.com/data/${folder}/${s}${a}.mp3`;
 }
 
-/**
- * Audio URL for a reciter + ayah (verse-by-verse everyayah).
- */
 export function ayahAudioUrl(
   qari: Qari | string,
   surahNumber: number,
@@ -295,7 +292,6 @@ export function ayahAudioUrl(
     return everyayahVerseUrl("Alafasy_128kbps", surahNumber, ayahNumber);
   }
 
-  // Legacy surah-mode path (no longer in active library)
   if (q.playbackMode === "surah" && q.surahBaseUrl) {
     const missing = q.missingSurahs || [];
     if (missing.includes(surahNumber)) {
@@ -312,10 +308,6 @@ export function ayahAudioUrl(
   return everyayahVerseUrl(folder, surahNumber, ayahNumber);
 }
 
-/**
- * Authentic voice preview for the Qari library.
- * Fatiha ayah 2 (avoids shared basmalah samples).
- */
 export function qariPreviewAudioUrl(qari: Qari | string): string {
   const q =
     typeof qari === "string" ? getQari(resolvePlayableQariId(qari)) : qari;

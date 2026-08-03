@@ -1,11 +1,11 @@
 "use client";
 
 /**
- * Dynamic Quiz Hub — UI shell ready for external JSON/API banks.
- * Demo payload illustrates MCQ + fill_blank without inventing a 114-surah hardcode.
+ * Dynamic Quiz Hub — loads real bank from /api/v1/quiz/questions
+ * (Prisma DB if seeded, else data/quiz-bank.json with 700+ real items).
  */
 
-import { useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -20,146 +20,92 @@ import { formatArabicNumber, cn } from "@/lib/utils";
 import { DynamicQuizPlayer } from "@/components/quiz/dynamic-quiz-player";
 import type { DynamicQuizPayload } from "@/lib/quiz/dynamic-types";
 
-type Phase = "hub" | "play";
+type Phase = "hub" | "play" | "loading" | "error";
 type Category = "hifz" | "meanings" | "religious";
-
-/**
- * Placeholder samples only — real banks arrive via JSON/API later.
- * Structure matches DynamicQuizPayload exactly.
- */
-function buildDemoQuiz(
-  category: Category,
-  surahNumber: number
-): DynamicQuizPayload {
-  const name =
-    SURAHS.find((s) => s.number === surahNumber)?.nameAr ||
-    String(surahNumber);
-  if (category === "meanings") {
-    return {
-      id: `demo_meanings_${surahNumber}`,
-      titleAr: `معاني — ${name}`,
-      descriptionAr: "نموذج واجهة — يُستبدل ببنك خارجي",
-      category: "meanings",
-      surahNumber,
-      questions: [
-        {
-          id: "m1",
-          type: "mcq",
-          prompt: "ما المقصود بـ «ربّ العالمين»؟ (نموذج واجهة)",
-          choices: [
-            { id: "a", text: "خالق ومالك جميع المخلوقات" },
-            { id: "b", text: "رب قريش فقط" },
-            { id: "c", text: "اسم سورة" },
-            { id: "d", text: "لا معنى محدد" },
-          ],
-          answer: "a",
-          explanationAr: "سؤال توضيحي لهيكل الواجهة — ليس بنكاً نهائياً.",
-          meta: { surahNumber, source: "demo-json" },
-        },
-        {
-          id: "m2",
-          type: "fill_blank",
-          prompt: "أكمل: الحمد لله ___ العالمين (نموذج)",
-          answer: "رب",
-          meta: { surahNumber, source: "demo-json" },
-        },
-      ],
-    };
-  }
-  if (category === "religious") {
-    return {
-      id: `demo_rel_${surahNumber}`,
-      titleAr: `أسئلة دينية — ${name}`,
-      category: "religious",
-      surahNumber,
-      questions: [
-        {
-          id: "r1",
-          type: "true_false",
-          prompt: "قراءة الفاتحة ركن من أركان الصلاة. (نموذج واجهة)",
-          choices: [
-            { id: "t", text: "صحيح" },
-            { id: "f", text: "خطأ" },
-          ],
-          answer: "t",
-          meta: { source: "demo-json" },
-        },
-      ],
-    };
-  }
-  // hifz
-  return {
-    id: `demo_hifz_${surahNumber}`,
-    titleAr: `حفظ — ${name}`,
-    descriptionAr: "محرك ديناميكي جاهز لسحب أسئلة JSON/API",
-    category: "hifz",
-    surahNumber,
-    questions: [
-      {
-        id: "h1",
-        type: "mcq",
-        prompt: "ما الآية الأولى من السورة المحددة؟ (نموذج — سيُستبدل)",
-        contextAr: "…",
-        choices: [
-          { id: "a", text: "بسم الله الرحمن الرحيم / أو فاتحة السورة" },
-          { id: "b", text: "خيار توضيحي ٢" },
-          { id: "c", text: "خيار توضيحي ٣" },
-          { id: "d", text: "خيار توضيحي ٤" },
-        ],
-        answer: "a",
-        meta: { surahNumber, source: "demo-json" },
-      },
-      {
-        id: "h2",
-        type: "fill_blank",
-        prompt: "أكمل مطلع السورة (نموذج واجهة — فارغ حتى يُربط الـ API)",
-        answer: "",
-        meta: { surahNumber, source: "demo-json" },
-      },
-    ],
-  };
-}
 
 export default function QuizPage() {
   const [phase, setPhase] = useState<Phase>("hub");
-  const [surah, setSurah] = useState(1);
+  const [surah, setSurah] = useState(0); // 0 = all surahs
   const [category, setCategory] = useState<Category>("hifz");
   const [active, setActive] = useState<DynamicQuizPayload | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [bankMeta, setBankMeta] = useState<string | null>(null);
 
-  const categories = useMemo(
-    () =>
-      [
-        {
-          id: "hifz" as const,
-          title: "حفظ",
-          desc: "أسئلة تسميع/آيات من بنك خارجي",
-          icon: "📖",
-        },
-        {
-          id: "meanings" as const,
-          title: "معاني آيات",
-          desc: "فهم وتفسير — من JSON/API",
-          icon: "💡",
-        },
-        {
-          id: "religious" as const,
-          title: "أسئلة دينية",
-          desc: "معرفة مرتبطة بالسورة",
-          icon: "🕌",
-        },
-      ] as const,
-    []
-  );
+  const startQuiz = useCallback(async () => {
+    setPhase("loading");
+    setError(null);
+    try {
+      const qs = new URLSearchParams({
+        category,
+        limit: "15",
+      });
+      if (surah >= 1) qs.set("surah", String(surah));
+      const res = await fetch(`/api/v1/quiz/questions?${qs.toString()}`);
+      const data = await res.json();
+      if (!data?.ok || !data.questions?.length) {
+        setError("لا توجد أسئلة متاحة لهذا الاختيار. جرّب تصنيفاً آخر.");
+        setPhase("error");
+        return;
+      }
 
-  function startDemo() {
-    const quiz = buildDemoQuiz(category, surah);
-    setActive(quiz);
-    setPhase("play");
-  }
+      const surahName =
+        surah >= 1
+          ? SURAHS.find((s) => s.number === surah)?.nameAr
+          : "عام";
+      const titleMap: Record<Category, string> = {
+        hifz: "حفظ ومعرفة السور",
+        meanings: "معاني",
+        religious: "أسئلة دينية",
+      };
+
+      const quiz: DynamicQuizPayload = {
+        id: `live_${category}_${surah}_${Date.now()}`,
+        titleAr: `${titleMap[category]}${surahName ? ` — ${surahName}` : ""}`,
+        descriptionAr: `مصدر: ${data.source}${
+          data.totalInBank ? ` · البنك: ${data.totalInBank} سؤالاً` : ""
+        }`,
+        category,
+        surahNumber: surah || undefined,
+        questions: data.questions.map(
+          (q: {
+            id: string;
+            type: "mcq" | "fill_blank" | "true_false";
+            prompt: string;
+            contextAr?: string;
+            answer: string;
+            explanationAr?: string;
+            choices?: { id: string; text: string }[];
+            meta?: { surahNumber?: number; source?: string };
+          }) => ({
+            id: q.id,
+            type: q.type,
+            prompt: q.prompt,
+            contextAr: q.contextAr,
+            answer: q.answer,
+            explanationAr: q.explanationAr,
+            choices: q.choices,
+            meta: q.meta,
+          })
+        ),
+      };
+
+      setBankMeta(
+        data.totalInBank
+          ? `البنك: ${formatArabicNumber(data.totalInBank)} سؤالاً · ${data.source}`
+          : String(data.source || "")
+      );
+      setActive(quiz);
+      setPhase("play");
+    } catch {
+      setError("تعذّر تحميل الأسئلة. تحقق من الاتصال.");
+      setPhase("error");
+    }
+  }, [category, surah]);
 
   function exit() {
     setPhase("hub");
     setActive(null);
+    setError(null);
   }
 
   if (phase === "play" && active) {
@@ -171,18 +117,22 @@ export default function QuizPage() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl space-y-6">
+    <div className="mx-auto max-w-2xl space-y-6 pb-16">
       <PageHeader
         title="الاختبارات"
-        description="محرك واجهات مرن — يسحب الأسئلة من JSON/API لاحقاً دون اختراع بنك داخلي لـ ١١٤ سورة"
+        description="بنك أسئلة حقيقي ضخم (مئات الأسئلة) — سور · معاني · دين. يُحمَّل من قاعدة البيانات أو ملف JSON."
         backHref="/dashboard"
       />
 
+      {bankMeta && (
+        <p className="text-center text-xs text-muted-foreground">{bankMeta}</p>
+      )}
+
       <Card className="border-[#D4AF37]/25">
         <CardHeader className="pb-2">
-          <CardTitle className="text-base">١ · السورة</CardTitle>
+          <CardTitle className="text-base">١ · السورة (اختياري)</CardTitle>
           <CardDescription>
-            أسماء فقط — المحتوى يأتي من مصدر الاختبارات الخارجي
+            اختر سورة لتضييق الأسئلة، أو «جميع السور»
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -191,6 +141,7 @@ export default function QuizPage() {
             value={surah}
             onChange={(e) => setSurah(Number(e.target.value))}
           >
+            <option value={0}>جميع السور</option>
             {SURAHS.map((s) => (
               <option key={s.number} value={s.number}>
                 {formatArabicNumber(s.number)}. {s.nameAr}
@@ -202,13 +153,16 @@ export default function QuizPage() {
 
       <Card className="border-[#D4AF37]/25">
         <CardHeader className="pb-2">
-          <CardTitle className="text-base">٢ · نوع الاختبار</CardTitle>
-          <CardDescription>
-            الواجهة تدعم: اختيار من متعدد · أكمل الفراغ · صح/خطأ
-          </CardDescription>
+          <CardTitle className="text-base">٢ · التصنيف</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-3 sm:grid-cols-3">
-          {categories.map((c) => (
+          {(
+            [
+              { id: "hifz" as const, title: "حفظ", icon: "📖" },
+              { id: "meanings" as const, title: "معاني", icon: "💡" },
+              { id: "religious" as const, title: "دينية", icon: "🕌" },
+            ] as const
+          ).map((c) => (
             <button
               key={c.id}
               type="button"
@@ -222,29 +176,23 @@ export default function QuizPage() {
             >
               <div className="text-2xl mb-2">{c.icon}</div>
               <p className="font-semibold text-sm">{c.title}</p>
-              <p className="text-[11px] text-muted-foreground mt-1">{c.desc}</p>
             </button>
           ))}
         </CardContent>
       </Card>
 
-      <Card className="border-dashed border-[#D4AF37]/30">
-        <CardContent className="p-4 text-xs text-muted-foreground leading-relaxed">
-          <strong className="text-foreground">للمطورين:</strong> حمّل{" "}
-          <code className="text-[10px]">DynamicQuizPayload</code> من API/JSON
-          ثم مرّره إلى{" "}
-          <code className="text-[10px]">DynamicQuizPlayer</code>. الزر أدناه
-          يشغّل عينة توضيحية للواجهة فقط.
-        </CardContent>
-      </Card>
+      {(phase === "error" || error) && (
+        <p className="text-sm text-center text-[#D4AF37]">{error}</p>
+      )}
 
       <Button
         type="button"
         variant="premium"
         className="w-full h-12"
-        onClick={startDemo}
+        disabled={phase === "loading"}
+        onClick={() => void startQuiz()}
       >
-        فتح واجهة الاختبار (عينة ديناميكية)
+        {phase === "loading" ? "جاري التحميل…" : "ابدأ الاختبار"}
       </Button>
     </div>
   );

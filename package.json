@@ -13,6 +13,8 @@
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
+    "db:seed": "node prisma/seed.mjs",
+    "quiz:bank": "node scripts/build-quiz-bank.mjs",
     "prod:check": "node scripts/production-readiness.mjs",
     "prod:validate-auth-sync": "node scripts/validate-auth-sync.mjs",
     "prod:validate-first-user": "node scripts/validate-first-user-flow.mjs",
@@ -49,5 +51,8 @@
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^3.2.4"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.mjs"
   }
 }

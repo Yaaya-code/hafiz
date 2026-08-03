@@ -212,16 +212,23 @@ export class ArabicSpeechSession {
   /** Held only if we opened getUserMedia ourselves for recording — SR owns its stream */
   private heldStream: MediaStream | null = null;
   private softResumeEnabled = false;
+  /**
+   * When true: onend auto-restarts silently while wantContinue
+   * (direct-recite continuous mode — user stops only via explicit stop).
+   */
+  private continuousAutoResume = false;
 
   /**
    * Start recognition. Call from a user gesture (button click).
-   * @param opts.allowSoftResume — if true, one delayed restart after long silence (desktop only by default)
-   * @param opts.holdStream — optional MediaStream to own until stop (MediaRecorder path)
+   * @param opts.allowSoftResume — if true, delayed restart after silence (desktop default)
+   * @param opts.continuousAutoResume — keep mic alive across browser onend (mobile+desktop)
+   * @param opts.holdStream — optional MediaStream to own until stop
    */
   start(
     handlers: SpeechHandlers = {},
     opts?: {
       allowSoftResume?: boolean;
+      continuousAutoResume?: boolean;
       holdStream?: MediaStream | null;
       /** Keep accumulated finalBuffer (continue after silence pause) */
       preserveBuffer?: boolean;
@@ -258,11 +265,13 @@ export class ArabicSpeechSession {
     this.running = true;
     this.wantContinue = true;
     this.mobile = isMobileSpeechEnvironment();
-    // Soft resume: OFF on mobile (restarts = Chrome notification spam)
+    this.continuousAutoResume = opts?.continuousAutoResume === true;
+    // Soft resume: OFF on mobile unless continuousAutoResume (direct mode)
     this.softResumeEnabled =
-      opts?.allowSoftResume === true
+      this.continuousAutoResume ||
+      (opts?.allowSoftResume === true
         ? true
-        : !this.mobile && opts?.allowSoftResume !== false;
+        : !this.mobile && opts?.allowSoftResume !== false);
     if (opts?.holdStream) {
       this.heldStream = opts.holdStream;
     }
@@ -286,8 +295,19 @@ export class ArabicSpeechSession {
     Ctor: new () => BrowserSpeechRecognition
   ): { ok: boolean; error?: string } {
     const now = Date.now();
-    // Absolute minimum between starts (even soft) — Android needs this
-    if (now - this.lastStartAt < (this.mobile ? 2500 : 800)) {
+    // Min gap between starts — shorter when continuous auto-resume (keep stream alive)
+    const minGap = this.continuousAutoResume
+      ? this.mobile
+        ? 350
+        : 200
+      : this.mobile
+        ? 2500
+        : 800;
+    if (now - this.lastStartAt < minGap) {
+      // Schedule a real retry if continuous mode still wants the mic
+      if (this.continuousAutoResume && this.wantContinue && !this.destroyed) {
+        this.scheduleSoftResume(minGap - (now - this.lastStartAt) + 50);
+      }
       return { ok: true };
     }
     this.lastStartAt = now;
@@ -388,22 +408,29 @@ export class ArabicSpeechSession {
 
     rec.onend = () => {
       this.handlers.onListeningChange?.(false);
-      // Mobile: NEVER auto-restart — each start() = Chrome notification chime
-      if (this.mobile || !this.softResumeEnabled || !this.wantContinue) {
+      if (!this.wantContinue || this.destroyed) {
         this.running = false;
-        if (this.wantContinue) {
-          // User still in recite mode — ask them to resume explicitly via UI
-          this.handlers.onEnd?.();
-        } else {
-          this.handlers.onEnd?.();
-        }
+        this.handlers.onEnd?.();
         return;
       }
 
-      // Desktop soft resume only after real long pause (2.5s+)
+      // Continuous auto-resume: browser closed session (silence) but user did not stop
+      if (this.continuousAutoResume) {
+        this.running = true;
+        // Keep UI "listening" — silent restart, preserve buffer
+        this.scheduleSoftResume(this.mobile ? 280 : 150);
+        return;
+      }
+
+      // Legacy soft resume (desktop only path)
+      if (!this.softResumeEnabled || this.mobile) {
+        this.running = false;
+        this.handlers.onEnd?.();
+        return;
+      }
+
       const silenceMs = Date.now() - (this.lastResultAt || this.lastStartAt);
       if (silenceMs < 2000) {
-        // Short end — schedule one delayed restart at most
         this.scheduleSoftResume(2500);
         return;
       }
@@ -427,14 +454,17 @@ export class ArabicSpeechSession {
   }
 
   private scheduleSoftResume(delayMs: number) {
-    if (!this.wantContinue || this.destroyed || this.mobile) return;
+    if (!this.wantContinue || this.destroyed) return;
+    // Mobile allowed only with continuousAutoResume
+    if (this.mobile && !this.continuousAutoResume) return;
     if (this.restartTimer) clearTimeout(this.restartTimer);
     this.restartTimer = setTimeout(() => {
       this.restartTimer = null;
-      if (!this.wantContinue || this.destroyed || this.mobile) return;
-      // One soft restart — buffer preserved
+      if (!this.wantContinue || this.destroyed) return;
+      if (this.mobile && !this.continuousAutoResume) return;
+      // Soft restart — buffer preserved
       this.softRestart();
-    }, delayMs);
+    }, Math.max(50, delayMs));
   }
 
   /** Explicit resume after Chrome ended the session (button) — preserves buffer */

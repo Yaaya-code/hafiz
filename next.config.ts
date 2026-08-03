@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // transformers.js / onnxruntime — client-only WASM STT (free continuous mic)
+  serverExternalPackages: ["@huggingface/transformers", "onnxruntime-node"],
   // PWA: headers help installability / offline shell
   async headers() {
     return [

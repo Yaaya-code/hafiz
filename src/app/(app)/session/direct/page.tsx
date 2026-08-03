@@ -29,9 +29,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { BackButton } from "@/components/layout/back-button";
 import { SURAHS, getSurah, getSurahAyahs } from "@/lib/quran";
 import {
-  ArabicSpeechSession,
+  ContinuousArabicSpeech,
+  pickSpeechEngine,
+} from "@/lib/quran/continuous-speech";
+import {
   isSpeechRecognitionSupported,
+  isMobileSpeechEnvironment,
 } from "@/lib/quran/speech-recognition";
+import { isWasmSpeechSupported } from "@/lib/quran/wasm-whisper-session";
 import {
   buildLiveWordStream,
   finalFeedbackAr,
@@ -41,7 +46,7 @@ import {
 import { formatArabicNumber, cn } from "@/lib/utils";
 import { saveSurahRecitationProgress } from "@/lib/quran/recitation-progress";
 
-type Phase = "idle" | "listening" | "paused" | "done";
+type Phase = "idle" | "listening" | "paused" | "done" | "loading_model";
 
 export default function DirectSessionPage() {
   return (
@@ -104,8 +109,11 @@ function DirectSessionInner() {
   const [hintOn, setHintOn] = useState(false);
   /** Force-reveal all text (user toggle) */
   const [showAllText, setShowAllText] = useState(false);
+  const [modelPct, setModelPct] = useState(0);
+  const [modelStatus, setModelStatus] = useState<string | null>(null);
+  const [engineLabel, setEngineLabel] = useState("");
 
-  const speechRef = useRef<ArabicSpeechSession | null>(null);
+  const speechRef = useRef<ContinuousArabicSpeech | null>(null);
   const transcriptRef = useRef("");
   const phaseRef = useRef<Phase>("idle");
   phaseRef.current = phase;
@@ -190,6 +198,16 @@ function DirectSessionInner() {
   }, []);
 
   useEffect(() => {
+    // Show which free engine will be used
+    const eng = pickSpeechEngine();
+    setEngineLabel(
+      eng === "wasm-whisper"
+        ? "محرك مجاني مستمر (Whisper داخل المتصفح)"
+        : "محرك المتصفح (Web Speech)"
+    );
+  }, []);
+
+  useEffect(() => {
     const hardKill = () => killSpeech();
     window.addEventListener("pagehide", hardKill);
     return () => {
@@ -232,24 +250,56 @@ function DirectSessionInner() {
     setSpeechError(null);
     setStatusMsg(null);
     setReport(null);
-    if (!isSpeechRecognitionSupported()) {
-      setSpeechError(
-        "التعرّف على الصوت غير مدعوم. استخدم Chrome على Android أو سطح المكتب."
-      );
+
+    const eng = pickSpeechEngine();
+    if (eng === "webspeech" && !isSpeechRecognitionSupported()) {
+      if (!isWasmSpeechSupported()) {
+        setSpeechError(
+          "التعرّف على الصوت غير مدعوم على هذا الجهاز/المتصفح."
+        );
+        return;
+      }
+    }
+    if (eng === "wasm-whisper" && !isWasmSpeechSupported()) {
+      setSpeechError("محرك التعرّف المجاني يحتاج متصفحاً حديثاً وHTTPS.");
       return;
     }
-    if (!speechRef.current) speechRef.current = new ArabicSpeechSession();
-    // MediaStream Audio Lock first — hardware stays open (no Android beep)
-    const r = await speechRef.current.startWithMicLock(speechHandlers(), {
-      continuousAutoResume: true,
+
+    if (!speechRef.current) speechRef.current = new ContinuousArabicSpeech();
+
+    if (eng === "wasm-whisper") {
+      setPhase("loading_model");
+      setModelPct(0);
+      setModelStatus("تحضير المحرك المجاني…");
+    }
+
+    const r = await speechRef.current.start(speechHandlers(), {
       preserveBuffer: preserve,
+      onModelProgress: (pct, status) => {
+        setModelPct(pct);
+        setModelStatus(status);
+      },
     });
+
     if (!r.ok) {
       setSpeechError(r.error || "تعذّر بدء الميكروفون");
       setPhase("idle");
+      setModelStatus(null);
       return;
     }
+
+    setEngineLabel(
+      r.engine === "wasm-whisper"
+        ? "محرك مجاني مستمر (Whisper داخل المتصفح) — بلا نغمات"
+        : "محرك المتصفح (Web Speech)"
+    );
+    setModelStatus(null);
     setPhase("listening");
+    if (r.engine === "wasm-whisper") {
+      setStatusMsg(
+        "الاستماع مستمر مجاناً داخل جهازك. أول مرة قد تُحمَّل ملفات النموذج ثم تُخزَّن في المتصفح."
+      );
+    }
   }
 
   async function continueListening() {
@@ -259,25 +309,18 @@ function DirectSessionInner() {
       await startListening(true);
       return;
     }
-    // Re-use held MediaStream lock — no second getUserMedia if still live
-    const r = await speechRef.current.startWithMicLock(speechHandlers(), {
-      continuousAutoResume: true,
-      preserveBuffer: true,
-    });
+    const r = await speechRef.current.resume();
     if (!r.ok) {
-      setSpeechError(r.error || "تعذّر الاستئناف");
-      setPhase("paused");
+      // Full restart with preserve
+      await startListening(true);
       return;
     }
     setPhase("listening");
   }
 
-  /**
-   * Explicit user pause — stops SpeechRecognition but keeps mic hardware lock
-   * so «متابعة» does not re-open hardware (no beep).
-   */
+  /** Explicit user pause */
   function stopListening() {
-    speechRef.current?.pauseRecognition();
+    speechRef.current?.pause();
     setPhase("paused");
     setStatusMsg("أوقفتَ التسميع يدوياً. اضغط «متابعة» للاستئناف.");
   }
@@ -415,6 +458,7 @@ function DirectSessionInner() {
   }
 
   function onPrimaryAction() {
+    if (phase === "loading_model") return;
     if (phase === "listening") {
       stopListening();
       return;
@@ -431,13 +475,15 @@ function DirectSessionInner() {
   }
 
   const primaryLabel =
-    phase === "listening"
-      ? "إيقاف"
-      : phase === "paused"
-        ? "متابعة التسميع"
-        : phase === "done"
-          ? "العودة للرئيسية"
-          : "ابدأ التسميع";
+    phase === "loading_model"
+      ? "جاري التحميل…"
+      : phase === "listening"
+        ? "إيقاف"
+        : phase === "paused"
+          ? "متابعة التسميع"
+          : phase === "done"
+            ? "العودة للرئيسية"
+            : "ابدأ التسميع";
 
   function renderWord(w: LiveDisplayWord) {
     const isCursor =
@@ -584,10 +630,25 @@ function DirectSessionInner() {
             {accuracy != null && phase !== "idle" && (
               <> · {formatArabicNumber(Math.round(accuracy * 100))}٪</>
             )}
-            {phase === "listening" && (
-              <> · المايك مقفول مفتوحاً (بدون نغمة إعادة تشغيل)</>
+            {phase === "listening" && engineLabel && (
+              <> · {engineLabel}</>
             )}
           </p>
+          {phase === "loading_model" && (
+            <div className="space-y-1">
+              <Progress value={modelPct} className="h-1.5" />
+              <p className="text-center text-[11px] text-[#D4AF37]">
+                {modelStatus || "تحميل المحرك المجاني…"} {modelPct}%
+              </p>
+            </div>
+          )}
+          {engineLabel && phase === "idle" && (
+            <p className="text-center text-[10px] text-muted-foreground">
+              {isMobileSpeechEnvironment()
+                ? "على الموبايل: محرك Whisper مجاني داخل المتصفح (بدون سحابة مدفوعة وبدون نغمة إعادة تشغيل)."
+                : engineLabel}
+            </p>
+          )}
         </div>
       </div>
 

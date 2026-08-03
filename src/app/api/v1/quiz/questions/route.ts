@@ -43,51 +43,68 @@ export async function GET(req: NextRequest) {
     : undefined;
   const limit = Math.min(100, Math.max(1, Number(searchParams.get("limit") || 20)));
 
-  // ── DB path ──────────────────────────────────────────────────────────
+  // ── DB path (models may be missing until prisma generate + db push) ──
   if (isDatabaseConfigured() && prisma) {
     try {
-      const rows = await prisma.question.findMany({
-        where: {
-          ...(category
-            ? { category: { slug: category } }
-            : {}),
-          ...(surah && surah >= 1 && surah <= 114
-            ? { surahNumber: surah }
-            : {}),
-        },
-        include: {
-          options: { orderBy: { sortOrder: "asc" } },
-          category: true,
-        },
-        take: Math.min(500, limit * 5),
-        orderBy: { id: "asc" },
-      });
-
-      if (rows.length > 0) {
-        // shuffle then take limit
-        const shuffled = [...rows].sort(() => Math.random() - 0.5).slice(0, limit);
-        const questions = shuffled.map((q) => ({
-          id: q.id,
-          type: q.type as "mcq" | "fill_blank" | "true_false",
-          prompt: q.prompt,
-          contextAr: q.contextAr || undefined,
-          answer: q.answer,
-          explanationAr: q.explanationAr || undefined,
-          choices: q.options.map((o) => ({ id: o.key, text: o.text })),
-          meta: {
-            surahNumber: q.surahNumber ?? undefined,
-            source: q.source || undefined,
-            difficulty: q.difficulty,
-            category: q.category.slug,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const db = prisma as any;
+      if (typeof db.question?.findMany === "function") {
+        const rows = await db.question.findMany({
+          where: {
+            ...(category ? { category: { slug: category } } : {}),
+            ...(surah && surah >= 1 && surah <= 114
+              ? { surahNumber: surah }
+              : {}),
           },
-        }));
-
-        return NextResponse.json({
-          ok: true,
-          source: "database",
-          count: questions.length,
-          questions,
+          include: {
+            options: { orderBy: { sortOrder: "asc" } },
+            category: true,
+          },
+          take: Math.min(500, limit * 5),
+          orderBy: { id: "asc" },
         });
+
+        if (rows.length > 0) {
+          const shuffled = [...rows]
+            .sort(() => Math.random() - 0.5)
+            .slice(0, limit);
+          const questions = shuffled.map(
+            (q: {
+              id: string;
+              type: string;
+              prompt: string;
+              contextAr: string | null;
+              answer: string;
+              explanationAr: string | null;
+              surahNumber: number | null;
+              source: string | null;
+              difficulty: number;
+              options: { key: string; text: string }[];
+              category: { slug: string };
+            }) => ({
+              id: q.id,
+              type: q.type as "mcq" | "fill_blank" | "true_false",
+              prompt: q.prompt,
+              contextAr: q.contextAr || undefined,
+              answer: q.answer,
+              explanationAr: q.explanationAr || undefined,
+              choices: q.options.map((o) => ({ id: o.key, text: o.text })),
+              meta: {
+                surahNumber: q.surahNumber ?? undefined,
+                source: q.source || undefined,
+                difficulty: q.difficulty,
+                category: q.category.slug,
+              },
+            })
+          );
+
+          return NextResponse.json({
+            ok: true,
+            source: "database",
+            count: questions.length,
+            questions,
+          });
+        }
       }
     } catch (e) {
       console.error("[quiz/questions] db", e);

@@ -209,20 +209,83 @@ export class ArabicSpeechSession {
   private lastStartAt = 0;
   private mobile = false;
   private destroyed = false;
-  /** Held only if we opened getUserMedia ourselves for recording — SR owns its stream */
+  /**
+   * MediaStream Audio Lock: keep getUserMedia tracks LIVE for the whole
+   * session so Android does not beep on SpeechRecognition restart.
+   */
   private heldStream: MediaStream | null = null;
+  private silentCtx: AudioContext | null = null;
   private softResumeEnabled = false;
   /**
-   * When true: onend auto-restarts silently while wantContinue
-   * (direct-recite continuous mode — user stops only via explicit stop).
+   * When true: onend auto-restarts SR while wantContinue + mic lock held.
    */
   private continuousAutoResume = false;
 
   /**
-   * Start recognition. Call from a user gesture (button click).
-   * @param opts.allowSoftResume — if true, delayed restart after silence (desktop default)
-   * @param opts.continuousAutoResume — keep mic alive across browser onend (mobile+desktop)
-   * @param opts.holdStream — optional MediaStream to own until stop
+   * Open / keep a live getUserMedia stream (hardware lock).
+   * Must be called from a user gesture on first open.
+   */
+  async lockMicrophone(): Promise<{ ok: boolean; error?: string }> {
+    if (
+      this.heldStream &&
+      this.heldStream.getTracks().some((t) => t.readyState === "live")
+    ) {
+      return { ok: true };
+    }
+    // Replace dead stream
+    if (this.heldStream) {
+      this.releaseMicLockOnly();
+    }
+    const perm = await requestMicrophonePermission();
+    if (!perm.ok || !perm.stream) {
+      return { ok: false, error: perm.error || "تعذّر فتح الميكروفون" };
+    }
+    this.heldStream = perm.stream;
+    this.attachSilentKeepAlive(perm.stream);
+    return { ok: true };
+  }
+
+  /** Keep AudioContext graph so the track is not suspended by the OS */
+  private attachSilentKeepAlive(stream: MediaStream) {
+    this.releaseSilentKeepAlive();
+    try {
+      const W = window as unknown as {
+        AudioContext?: typeof AudioContext;
+        webkitAudioContext?: typeof AudioContext;
+      };
+      const Ctx = W.AudioContext || W.webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const src = ctx.createMediaStreamSource(stream);
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      src.connect(gain);
+      gain.connect(ctx.destination);
+      void ctx.resume();
+      this.silentCtx = ctx;
+    } catch {
+      /* optional polyfill path */
+    }
+  }
+
+  private releaseSilentKeepAlive() {
+    try {
+      void this.silentCtx?.close();
+    } catch {
+      /* ignore */
+    }
+    this.silentCtx = null;
+  }
+
+  private releaseMicLockOnly() {
+    this.releaseSilentKeepAlive();
+    stopMediaStream(this.heldStream);
+    this.heldStream = null;
+  }
+
+  /**
+   * Start recognition. Prefer await lockMicrophone() first for continuous mobile.
+   * Call from a user gesture (button click).
    */
   start(
     handlers: SpeechHandlers = {},
@@ -230,8 +293,10 @@ export class ArabicSpeechSession {
       allowSoftResume?: boolean;
       continuousAutoResume?: boolean;
       holdStream?: MediaStream | null;
-      /** Keep accumulated finalBuffer (continue after silence pause) */
+      /** Keep accumulated finalBuffer (continue after mic silence) */
       preserveBuffer?: boolean;
+      /** Keep existing mic lock across this start (default true for continuous) */
+      keepMicLock?: boolean;
     }
   ): { ok: boolean; error?: string } {
     const cap = getSpeechCapability();
@@ -248,16 +313,20 @@ export class ArabicSpeechSession {
       return { ok: false, error: "التعرّف على الصوت غير مدعوم." };
     }
 
-    // Full stop previous instance + any held stream from a prior session
+    // Only tear down SpeechRecognition — NEVER kill mic lock mid-session
     this.destroyRecognitionOnly();
-    if (this.heldStream) {
-      stopMediaStream(this.heldStream);
-      this.heldStream = null;
+
+    const keepLock =
+      opts?.keepMicLock === true ||
+      opts?.continuousAutoResume === true ||
+      opts?.preserveBuffer === true;
+
+    if (!keepLock && this.heldStream && !opts?.holdStream) {
+      this.releaseMicLockOnly();
     }
 
     this.destroyed = false;
     this.handlers = handlers;
-    // Fresh start clears buffer unless preserveBuffer (continue after mic silence)
     if (!opts?.preserveBuffer) {
       this.finalBuffer = "";
     }
@@ -266,26 +335,51 @@ export class ArabicSpeechSession {
     this.wantContinue = true;
     this.mobile = isMobileSpeechEnvironment();
     this.continuousAutoResume = opts?.continuousAutoResume === true;
-    // Soft resume: OFF on mobile unless continuousAutoResume (direct mode)
     this.softResumeEnabled =
       this.continuousAutoResume ||
       (opts?.allowSoftResume === true
         ? true
         : !this.mobile && opts?.allowSoftResume !== false);
+
     if (opts?.holdStream) {
+      if (this.heldStream && this.heldStream !== opts.holdStream) {
+        this.releaseMicLockOnly();
+      }
       this.heldStream = opts.holdStream;
+      this.attachSilentKeepAlive(opts.holdStream);
     }
 
     return this.attachAndStart(Ctor);
   }
 
-  /** Start without wiping finalBuffer (soft resume after long pause) */
+  /**
+   * Async start with MediaStream Audio Lock (recommended for mobile continuous).
+   */
+  async startWithMicLock(
+    handlers: SpeechHandlers = {},
+    opts?: {
+      continuousAutoResume?: boolean;
+      preserveBuffer?: boolean;
+    }
+  ): Promise<{ ok: boolean; error?: string }> {
+    const lock = await this.lockMicrophone();
+    if (!lock.ok) return lock;
+    return this.start(handlers, {
+      continuousAutoResume: opts?.continuousAutoResume !== false,
+      preserveBuffer: opts?.preserveBuffer,
+      keepMicLock: true,
+      holdStream: this.heldStream,
+    });
+  }
+
+  /** Soft SR restart — keeps MediaStream lock + finalBuffer */
   private softRestart(): { ok: boolean; error?: string } {
     if (this.destroyed || !this.wantContinue) {
       return { ok: false, error: "stopped" };
     }
     const Ctor = getSpeechRecognitionCtor();
     if (!Ctor) return { ok: false, error: "no ctor" };
+    // Critical: destroyRecognitionOnly only — heldStream stays LIVE (no beep)
     this.destroyRecognitionOnly();
     this.running = true;
     return this.attachAndStart(Ctor);
@@ -467,14 +561,13 @@ export class ArabicSpeechSession {
     }, Math.max(50, delayMs));
   }
 
-  /** Explicit resume after Chrome ended the session (button) — preserves buffer */
+  /** Explicit resume after Chrome ended the session (button) — preserves buffer + mic lock */
   resume(): { ok: boolean; error?: string } {
     if (this.destroyed) {
       return { ok: false, error: "session destroyed" };
     }
     this.wantContinue = true;
     this.running = true;
-    // Clear any pending timer
     if (this.restartTimer) {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
@@ -485,15 +578,10 @@ export class ArabicSpeechSession {
     return this.attachAndStart(Ctor);
   }
 
-  stop(): string {
-    this.wantContinue = false;
-    // Intentional user stop — no onEnd (avoids "paused, resume" UI after finish)
-    this.hardStop(false);
-    return this.finalBuffer;
-  }
-
-  /** Full teardown — recognition + held MediaStream tracks */
-  hardStop(emitEnd: boolean) {
+  /**
+   * Pause SR only — keeps MediaStream lock so resume has no hardware beep.
+   */
+  pauseRecognition(): string {
     this.wantContinue = false;
     if (this.restartTimer) {
       clearTimeout(this.restartTimer);
@@ -504,10 +592,31 @@ export class ArabicSpeechSession {
       this.interimTimer = null;
     }
     this.destroyRecognitionOnly();
-    if (this.heldStream) {
-      stopMediaStream(this.heldStream);
-      this.heldStream = null;
+    this.running = false;
+    this.handlers.onListeningChange?.(false);
+    return this.finalBuffer;
+  }
+
+  stop(): string {
+    this.wantContinue = false;
+    this.hardStop(false);
+    return this.finalBuffer;
+  }
+
+  /** Full teardown — recognition + MediaStream Audio Lock */
+  hardStop(emitEnd: boolean) {
+    this.wantContinue = false;
+    this.continuousAutoResume = false;
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
     }
+    if (this.interimTimer) {
+      clearTimeout(this.interimTimer);
+      this.interimTimer = null;
+    }
+    this.destroyRecognitionOnly();
+    this.releaseMicLockOnly();
     this.running = false;
     this.handlers.onListeningChange?.(false);
     if (emitEnd) this.handlers.onEnd?.();
@@ -558,9 +667,16 @@ export class ArabicSpeechSession {
   /** Attach external MediaRecorder stream for ownership until stop */
   attachHeldStream(stream: MediaStream | null) {
     if (this.heldStream && this.heldStream !== stream) {
-      stopMediaStream(this.heldStream);
+      this.releaseMicLockOnly();
     }
     this.heldStream = stream;
+    if (stream) this.attachSilentKeepAlive(stream);
+  }
+
+  isMicLocked(): boolean {
+    return Boolean(
+      this.heldStream?.getTracks().some((t) => t.readyState === "live")
+    );
   }
 }
 

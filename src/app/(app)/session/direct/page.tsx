@@ -228,7 +228,7 @@ function DirectSessionInner() {
     };
   }
 
-  function startListening(preserve: boolean) {
+  async function startListening(preserve: boolean) {
     setSpeechError(null);
     setStatusMsg(null);
     setReport(null);
@@ -239,9 +239,9 @@ function DirectSessionInner() {
       return;
     }
     if (!speechRef.current) speechRef.current = new ArabicSpeechSession();
-    const r = speechRef.current.start(speechHandlers(), {
+    // MediaStream Audio Lock first — hardware stays open (no Android beep)
+    const r = await speechRef.current.startWithMicLock(speechHandlers(), {
       continuousAutoResume: true,
-      allowSoftResume: true,
       preserveBuffer: preserve,
     });
     if (!r.ok) {
@@ -252,24 +252,32 @@ function DirectSessionInner() {
     setPhase("listening");
   }
 
-  function continueListening() {
+  async function continueListening() {
     setSpeechError(null);
     setStatusMsg(null);
     if (!speechRef.current) {
-      startListening(true);
+      await startListening(true);
       return;
     }
-    speechRef.current.start(speechHandlers(), {
+    // Re-use held MediaStream lock — no second getUserMedia if still live
+    const r = await speechRef.current.startWithMicLock(speechHandlers(), {
       continuousAutoResume: true,
-      allowSoftResume: true,
       preserveBuffer: true,
     });
+    if (!r.ok) {
+      setSpeechError(r.error || "تعذّر الاستئناف");
+      setPhase("paused");
+      return;
+    }
     setPhase("listening");
   }
 
-  /** Explicit user stop — ends continuous auto-resume */
+  /**
+   * Explicit user pause — stops SpeechRecognition but keeps mic hardware lock
+   * so «متابعة» does not re-open hardware (no beep).
+   */
   function stopListening() {
-    speechRef.current?.stop();
+    speechRef.current?.pauseRecognition();
     setPhase("paused");
     setStatusMsg("أوقفتَ التسميع يدوياً. اضغط «متابعة» للاستئناف.");
   }
@@ -412,14 +420,14 @@ function DirectSessionInner() {
       return;
     }
     if (phase === "paused") {
-      continueListening();
+      void continueListening();
       return;
     }
     if (phase === "done") {
       router.push("/dashboard");
       return;
     }
-    startListening(false);
+    void startListening(false);
   }
 
   const primaryLabel =
@@ -476,40 +484,114 @@ function DirectSessionInner() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl space-y-4 pb-[11rem] sm:pb-[10rem]">
-      <div className="flex flex-wrap items-start justify-between gap-3 sticky top-0 z-20 bg-background/90 backdrop-blur border-b border-border/40 py-3 -mx-1 px-1">
-        <div>
-          <BackButton href="/dashboard" />
-          <h1 className="mt-2 text-lg font-bold">
-            تسميع مباشر · {surah.nameAr}
-          </h1>
-          <p className="text-xs text-muted-foreground">
-            {formatArabicNumber(fromAyah)}–{formatArabicNumber(toAyah)} · نص
-            مخفي · مايك مستمر
+    <div className="mx-auto max-w-2xl space-y-4 pb-8">
+      {/*
+        STICKY TOP CONTROL BAR — first thing user sees; stays under thumb while scrolling.
+        sticky top-0 z-50 — NOT after 286 ayahs in the document flow.
+      */}
+      <div className="sticky top-0 z-50 -mx-1 border-b border-[#D4AF37]/30 bg-background/98 shadow-md backdrop-blur-md">
+        <div className="space-y-2 p-3 sm:p-4">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="min-w-0">
+              <BackButton href="/dashboard" />
+              <h1 className="mt-1 text-base sm:text-lg font-bold truncate">
+                تسميع · {surah.nameAr}{" "}
+                <span className="text-xs font-normal text-muted-foreground">
+                  {formatArabicNumber(fromAyah)}–{formatArabicNumber(toAyah)}
+                </span>
+              </h1>
+            </div>
+            <div className="flex flex-wrap gap-1.5 shrink-0">
+              {phase === "listening" && (
+                <Badge variant="danger" className="gap-1">
+                  <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
+                  يستمع
+                </Badge>
+              )}
+              {phase === "paused" && <Badge variant="warning">متوقف</Badge>}
+            </div>
+          </div>
+
+          {/* Tools row */}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant={hintOn ? "premium" : "outline"}
+              className="gap-1 h-9"
+              onClick={() => setHintOn((v) => !v)}
+              disabled={phase === "done"}
+            >
+              <Eye className="h-3.5 w-3.5" />
+              {hintOn ? "إخفاء التلميح" : "تلميح"}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="gap-1 h-9"
+              onClick={() => setShowAllText((v) => !v)}
+            >
+              {showAllText ? (
+                <EyeOff className="h-3.5 w-3.5" />
+              ) : (
+                <Eye className="h-3.5 w-3.5" />
+              )}
+              {showAllText ? "إخفاء النص" : "إظهار النص"}
+            </Button>
+            <Link
+              href="/session/direct"
+              className="inline-flex h-9 items-center rounded-lg border border-border px-3 text-xs text-muted-foreground hover:text-foreground"
+            >
+              تغيير النطاق
+            </Link>
+          </div>
+
+          {/* Primary actions — always on screen */}
+          <div className="flex gap-2">
+            {(phase === "listening" || phase === "paused") && (
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-12 px-3 text-xs shrink-0"
+                onClick={endSession}
+              >
+                إنهاء
+              </Button>
+            )}
+            <Button
+              type="button"
+              variant={phase === "listening" ? "outline" : "premium"}
+              className={cn(
+                "h-12 flex-1 text-base font-bold gap-2 rounded-xl",
+                phase !== "listening" &&
+                  "shadow-[0_8px_24px_-8px_rgba(212,175,55,0.5)]"
+              )}
+              onClick={onPrimaryAction}
+            >
+              {phase === "listening" ? (
+                <MicOff className="h-5 w-5" />
+              ) : (
+                <Mic className="h-5 w-5" />
+              )}
+              {primaryLabel}
+            </Button>
+          </div>
+
+          <Progress value={progressPct} className="h-1.5" />
+          <p className="text-center text-[11px] text-muted-foreground">
+            آية {formatArabicNumber(currentAyah || fromAyah)}
+            {accuracy != null && phase !== "idle" && (
+              <> · {formatArabicNumber(Math.round(accuracy * 100))}٪</>
+            )}
+            {phase === "listening" && (
+              <> · المايك مقفول مفتوحاً (بدون نغمة إعادة تشغيل)</>
+            )}
           </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {phase === "listening" && (
-            <Badge variant="danger" className="gap-1">
-              <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
-              يستمع
-            </Badge>
-          )}
-          {phase === "paused" && (
-            <Badge variant="warning">متوقف</Badge>
-          )}
         </div>
       </div>
 
-      <Progress value={progressPct} className="h-2" />
-      <p className="text-center text-xs text-muted-foreground">
-        آية {formatArabicNumber(currentAyah || fromAyah)}
-        {accuracy != null && phase !== "idle" && (
-          <> · {formatArabicNumber(Math.round(accuracy * 100))}٪</>
-        )}
-      </p>
-
-      {/* Scrollable content only — NO primary controls here */}
+      {/* Scrollable ayah content — controls never live below this */}
       <div className="space-y-3">
         {range.map((a) => {
           const words = byAyah.get(a.ayahNumber) || [];
@@ -565,83 +647,6 @@ function DirectSessionInner() {
           {report}
         </div>
       )}
-
-      {/*
-        FIXED FLOATING BAR — always visible, never after 286 ayahs in the DOM flow.
-        position:fixed; bottom:0; z-index:50
-      */}
-      <div
-        className="fixed inset-x-0 bottom-0 z-50 border-t border-[#D4AF37]/30 bg-background/98 shadow-[0_-8px_30px_-12px_rgba(0,0,0,0.45)] backdrop-blur-md"
-        style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
-      >
-        <div className="mx-auto max-w-2xl space-y-2 p-3">
-          {/* Secondary row: hint / show text / range */}
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant={hintOn ? "premium" : "outline"}
-              className="gap-1 h-9"
-              onClick={() => setHintOn((v) => !v)}
-              disabled={phase === "done"}
-            >
-              <Eye className="h-3.5 w-3.5" />
-              {hintOn ? "إخفاء التلميح" : "تلميح"}
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className="gap-1 h-9"
-              onClick={() => setShowAllText((v) => !v)}
-            >
-              {showAllText ? (
-                <EyeOff className="h-3.5 w-3.5" />
-              ) : (
-                <Eye className="h-3.5 w-3.5" />
-              )}
-              {showAllText ? "إخفاء النص" : "إظهار النص"}
-            </Button>
-            <Link
-              href="/session/direct"
-              className="inline-flex h-9 items-center text-xs text-muted-foreground underline px-2"
-            >
-              تغيير النطاق
-            </Link>
-          </div>
-
-          {/* Primary row: end + start/stop/continue */}
-          <div className="flex gap-2">
-            {(phase === "listening" || phase === "paused") && (
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-14 px-3 text-xs shrink-0"
-                onClick={endSession}
-              >
-                إنهاء
-              </Button>
-            )}
-            <Button
-              type="button"
-              variant={phase === "listening" ? "outline" : "premium"}
-              className={cn(
-                "h-14 flex-1 text-base font-bold gap-2 rounded-2xl",
-                phase !== "listening" &&
-                  "shadow-[0_8px_30px_-8px_rgba(212,175,55,0.55)]"
-              )}
-              onClick={onPrimaryAction}
-            >
-              {phase === "listening" ? (
-                <MicOff className="h-5 w-5" />
-              ) : (
-                <Mic className="h-5 w-5" />
-              )}
-              {primaryLabel}
-            </Button>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }

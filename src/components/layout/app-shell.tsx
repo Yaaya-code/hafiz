@@ -4,6 +4,7 @@ import { useState } from "react";
 import { AppSidebar } from "./app-sidebar";
 import { AppHeader } from "./app-header";
 import { SyncStatusBanner } from "@/components/sync-status-banner";
+import { WhisperPreloader } from "@/components/speech/whisper-preloader";
 import { cn } from "@/lib/utils";
 
 /** True Kiswa canvas — seamless deep obsidian */
@@ -12,6 +13,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex min-h-screen max-w-[100vw] overflow-x-hidden bg-[#020408] text-foreground">
+      {/* Silent mobile Whisper model preload — after idle, never blocks UI */}
+      <WhisperPreloader />
       <div className="hidden lg:block sticky top-0 h-screen z-20 shrink-0">
         <AppSidebar />
       </div>

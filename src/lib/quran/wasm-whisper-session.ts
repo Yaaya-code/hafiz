@@ -1,58 +1,46 @@
 /**
- * Free forever continuous STT in the browser (Zero cloud cost).
+ * Free forever continuous STT (Zero cloud cost).
  *
- * Root causes fixed (mobile):
- * 1) Progress thrash: HF reports per-file 0–100; we aggregate by BYTES
- *    and enforce a monotonic UI percentage (never goes backwards).
- * 2) Eternal hang after "done": getUserMedia MUST run on the user gesture
- *    BEFORE the long model download. Post-gesture getUserMedia hangs on
- *    many Android Chrome builds with no reject.
- * 3) Silent hangs: every await has a timeout; start is re-entrant safe;
- *    failures always return { ok:false, error } instead of spinning forever.
+ * Architecture (mobile-first):
+ * - Main thread: getUserMedia + light PCM ring buffer + UI callbacks only
+ * - Web Worker: model load + Whisper ONNX/WASM inference (no UI freeze)
+ * - Shorter speech windows + energy gate + Quran initial_prompt
+ * - Transcript merge is conservative (avoids dumping multi-ayah garbage)
  */
 
 import type { SpeechHandlers } from "./speech-recognition";
 
-/**
- * Transformers.js ASR accepts only: string | URL | Float32Array | Float64Array.
- * Passing { array, sampling_rate } hits WhisperFeatureExtractor as plain Object → crash.
- */
-type AsrPipeline = (
-  audio: Float32Array | Float64Array | string | URL,
-  opts?: Record<string, unknown>
-) => Promise<{ text?: string } | { text?: string }[]>;
-
 type ProgressCb = (pct: number, status: string) => void;
 
 const TARGET_SR = 16000;
-const WINDOW_SEC = 5;
-const TICK_SEC = 2.5;
-const MAX_BUFFER_SEC = 28;
-/**
- * Multilingual tiny Whisper (free, in-browser).
- * Must load full-precision ONNX (fp32) — default quantized MatMulNBits weights
- * crash many mobile ORT builds (missing embed_tokens scale / DequantizeLinear).
- */
-const MODEL_ID = "Xenova/whisper-tiny";
-/** Whole pipeline including dynamic import of transformers + ONNX init */
-const PIPELINE_TIMEOUT_MS = 180_000;
+/** Shorter window = less lag + less main/worker pressure */
+const WINDOW_SEC = 2.8;
+/** Minimum gap between starting two inferences (ms) */
+const MIN_INFER_GAP_MS = 1800;
+/** Keep ~12s of mic audio (not 28s — reduces late multi-ayah dumps) */
+const MAX_BUFFER_SEC = 12;
 const MIC_TIMEOUT_MS = 25_000;
 const AUDIO_RESUME_MS = 8_000;
-/** Hard cap for an entire start() call (mic + model + wire audio) */
+const PIPELINE_TIMEOUT_MS = 180_000;
 const START_TIMEOUT_MS = 200_000;
+/** RMS gate — ignore silence / very soft noise */
+const RMS_MIN = 0.01;
 
-let sharedPipeline: AsrPipeline | null = null;
-let pipelineLoading: Promise<AsrPipeline> | null = null;
-/** Monotonic 0–100 for UI */
+type WorkerOut =
+  | { type: "progress"; pct: number; status: string }
+  | { type: "ready"; dtype: string }
+  | { type: "result"; id: number; text: string }
+  | { type: "error"; id?: number; error: string };
+
+let sharedWorker: Worker | null = null;
+let workerReady = false;
+let workerLoading: Promise<void> | null = null;
 let loadProgress = 0;
-/** Per-file byte tracking for true aggregate progress */
-const fileBytes = new Map<string, { loaded: number; total: number }>();
-/** Fallback when only percentage is available */
-const filePct = new Map<string, number>();
 const progressListeners = new Set<ProgressCb>();
+let inferSeq = 1;
 
 export function isWhisperPipelineReady(): boolean {
-  return sharedPipeline != null;
+  return workerReady && sharedWorker != null;
 }
 
 export function getWhisperLoadProgress(): number {
@@ -60,44 +48,14 @@ export function getWhisperLoadProgress(): number {
 }
 
 function emitProgress(pct: number, status: string) {
-  // Never go backwards (fixes 30% → 20% flicker from multi-file downloads)
   loadProgress = Math.max(loadProgress, Math.min(100, Math.round(pct)));
   for (const cb of progressListeners) {
     try {
       cb(loadProgress, status);
     } catch {
-      /* ignore listener errors */
+      /* ignore */
     }
   }
-}
-
-function recomputeAggregateProgress(status: string) {
-  // Prefer byte totals when we have them (correct multi-file aggregation)
-  let loadedSum = 0;
-  let totalSum = 0;
-  let hasBytes = false;
-  for (const v of fileBytes.values()) {
-    if (v.total > 0) {
-      hasBytes = true;
-      loadedSum += Math.min(v.loaded, v.total);
-      totalSum += v.total;
-    }
-  }
-  if (hasBytes && totalSum > 0) {
-    // Reserve 0–3 for library import, 3–95 for files, 95–100 for init
-    const fileShare = (loadedSum / totalSum) * 92;
-    emitProgress(3 + fileShare, status);
-    return;
-  }
-
-  if (filePct.size === 0) {
-    emitProgress(loadProgress, status);
-    return;
-  }
-  let sum = 0;
-  for (const v of filePct.values()) sum += v;
-  const avg = sum / filePct.size;
-  emitProgress(3 + avg * 0.92, status);
 }
 
 function withTimeout<T>(
@@ -120,220 +78,247 @@ function withTimeout<T>(
   });
 }
 
-export async function preloadWhisperModel(
-  onProgress?: ProgressCb
-): Promise<void> {
-  await ensurePipeline(onProgress);
-}
-
-async function ensurePipeline(onProgress?: ProgressCb): Promise<AsrPipeline> {
-  if (sharedPipeline) {
-    onProgress?.(100, "المحرك جاهز");
-    return sharedPipeline;
-  }
-
-  if (onProgress) progressListeners.add(onProgress);
-
-  if (!pipelineLoading) {
-    pipelineLoading = (async () => {
-      try {
-        emitProgress(Math.max(loadProgress, 1), "تحميل مكتبة التعرّف…");
-
-        // Timeout covers import + pipeline() + WASM/ONNX warm-up
-        const transcriber = await withTimeout(
-          (async () => {
-            const { pipeline, env } = await import(
-              "@huggingface/transformers"
-            );
-            env.allowLocalModels = false;
-            env.useBrowserCache = true;
-
-            emitProgress(
-              Math.max(loadProgress, 3),
-              "تحميل نموذج Whisper المجاني…"
-            );
-
-            const pipe = await pipeline(
-              "automatic-speech-recognition",
-              MODEL_ID,
-              {
-                // Avoid MatMulNBits / DequantizeLinear crashes on mobile ORT
-                // (ERROR: Missing required scale … embed_tokens.weight_merged_0_scale).
-                // quantized:false is the v2 API; dtype:"fp32" is the v3+ API.
-                quantized: false,
-                dtype: "fp32",
-                progress_callback: (p: {
-                  status?: string;
-                  progress?: number;
-                  file?: string;
-                  name?: string;
-                  loaded?: number;
-                  total?: number;
-                }) => {
-                  // Stable key: prefer file path; never use status alone
-                  const fileKey =
-                    (typeof p.file === "string" && p.file) ||
-                    (typeof p.name === "string" && p.name) ||
-                    "model";
-
-                  if (p.status === "done") {
-                    const prev = fileBytes.get(fileKey);
-                    if (prev && prev.total > 0) {
-                      fileBytes.set(fileKey, {
-                        loaded: prev.total,
-                        total: prev.total,
-                      });
-                    } else {
-                      filePct.set(fileKey, 100);
-                    }
-                    recomputeAggregateProgress(`اكتمل: ${shortName(fileKey)}`);
-                    return;
-                  }
-
-                  if (
-                    typeof p.loaded === "number" &&
-                    typeof p.total === "number" &&
-                    p.total > 0
-                  ) {
-                    const prev = fileBytes.get(fileKey);
-                    const loaded = Math.max(prev?.loaded ?? 0, p.loaded);
-                    fileBytes.set(fileKey, { loaded, total: p.total });
-                    recomputeAggregateProgress("تحميل ملفات النموذج…");
-                    return;
-                  }
-
-                  if (
-                    p.status === "progress" ||
-                    typeof p.progress === "number"
-                  ) {
-                    let fp = 0;
-                    if (typeof p.progress === "number") {
-                      // HF may report 0–1 or 0–100
-                      fp = p.progress <= 1 ? p.progress * 100 : p.progress;
-                    }
-                    const prev = filePct.get(fileKey) || 0;
-                    filePct.set(fileKey, Math.max(prev, Math.min(100, fp)));
-                    recomputeAggregateProgress("تحميل ملفات النموذج…");
-                  }
-                },
-              } as Record<string, unknown>
-            );
-
-            emitProgress(
-              Math.max(loadProgress, 96),
-              "تهيئة محرك WASM…"
-            );
-            return pipe as unknown as AsrPipeline;
-          })(),
-          PIPELINE_TIMEOUT_MS,
-          "انتهت مهلة تحميل النموذج (3 دقائق). تحقق من الشبكة أو الذاكرة وأعد المحاولة."
-        );
-
-        sharedPipeline = transcriber;
-        emitProgress(100, "المحرك جاهز");
-        return sharedPipeline;
-      } catch (e) {
-        pipelineLoading = null;
-        fileBytes.clear();
-        filePct.clear();
-        // Keep loadProgress so retry UI can show "استئناف" context; allow retry
-        throw e instanceof Error
-          ? e
-          : new Error("فشل تحميل محرك Whisper المجاني");
-      }
-    })();
-  }
-
-  try {
-    const pipe = await pipelineLoading;
-    return pipe;
-  } finally {
-    if (onProgress) progressListeners.delete(onProgress);
-  }
-}
-
-function shortName(path: string): string {
-  const parts = path.split(/[/\\]/);
-  return parts[parts.length - 1] || path;
-}
-
-function mergeTranscript(base: string, next: string): string {
-  const a = (base || "").trim();
-  const b = (next || "").trim();
-  if (!b) return a;
-  if (!a) return b;
-  if (a.endsWith(b)) return a;
-  if (b.startsWith(a)) return b;
-  const max = Math.min(a.length, b.length, 64);
-  for (let n = max; n >= 4; n--) {
-    if (a.slice(-n) === b.slice(0, n)) {
-      return (a + b.slice(n)).replace(/\s+/g, " ").trim();
-    }
-  }
-  const aWords = a.split(/\s+/);
-  const bWords = b.split(/\s+/);
-  for (let k = Math.min(8, aWords.length, bWords.length); k >= 2; k--) {
-    if (aWords.slice(-k).join(" ") === bWords.slice(0, k).join(" ")) {
-      return [...aWords, ...bWords.slice(k)].join(" ").trim();
-    }
-  }
-  return (a + " " + b).replace(/\s+/g, " ").trim();
-}
-
-function downsampleTo16k(input: Float32Array, fromRate: number): Float32Array {
-  if (fromRate === TARGET_SR) {
-    // Always return a contiguous Float32Array (not a view / SharedArrayBuffer slice)
-    return input instanceof Float32Array
-      ? new Float32Array(input)
-      : Float32Array.from(input as ArrayLike<number>);
-  }
-  const ratio = fromRate / TARGET_SR;
-  const newLen = Math.max(1, Math.floor(input.length / ratio));
-  const out = new Float32Array(newLen);
-  for (let i = 0; i < newLen; i++) {
-    out[i] = input[Math.floor(i * ratio)] ?? 0;
-  }
-  return out;
-}
-
-/**
- * WhisperFeatureExtractor requires a real Float32Array / Float64Array.
- * Never pass plain objects, AudioBuffer, or { array, sampling_rate }.
- */
-function toWhisperPcm(input: Float32Array): Float32Array {
-  if (!(input instanceof Float32Array) || input.length === 0) {
-    throw new Error(
-      "صيغة الصوت غير صالحة للمحرك (متوقع Float32Array خام)."
-    );
-  }
-  // Detach from mic ring buffer so concurrent onaudioprocess can't mutate mid-infer
-  const pcm = new Float32Array(input.length);
-  pcm.set(input);
-  return pcm;
-}
-
 function formatErr(e: unknown): string {
   if (e instanceof DOMException) {
     if (e.name === "NotAllowedError" || e.name === "PermissionDeniedError") {
       return "تم رفض إذن الميكروفون. اسمح به من إعدادات المتصفح ثم أعد المحاولة.";
     }
-    if (e.name === "NotFoundError") {
-      return "لم يُعثر على ميكروفون.";
-    }
+    if (e.name === "NotFoundError") return "لم يُعثر على ميكروفون.";
     if (e.name === "NotReadableError" || e.name === "AbortError") {
-      return `الميكروفون مشغول أو أُلغي الطلب (${e.name}). أغلق تطبيقات أخرى تستخدم المايك ثم أعد المحاولة.`;
+      return `الميكروفون مشغول أو أُلغي الطلب (${e.name}).`;
     }
     return `خطأ الميكروفون: ${e.name} — ${e.message}`;
   }
   if (e instanceof Error) {
-    // Out-of-memory / WASM compile often surfaces as vague RangeError / InternalError
     const m = e.message || e.name || "خطأ غير معروف";
     if (/memory|out of memory|OOM|Array buffer|allocation/i.test(m)) {
-      return `نفدت ذاكرة المتصفح أثناء تحميل النموذج. أغلق تبويبات أخرى وأعد المحاولة. التفاصيل: ${m}`;
+      return `نفدت ذاكرة المتصفح أثناء تحميل النموذج. أغلق تبويبات أخرى. التفاصيل: ${m}`;
     }
     return m;
   }
   return String(e || "خطأ غير معروف");
+}
+
+function createWhisperWorker(): Worker {
+  // Bundled by Next/webpack as a classic module worker
+  return new Worker(new URL("./whisper.worker.ts", import.meta.url));
+}
+
+function getOrCreateWorker(): Worker {
+  if (sharedWorker) return sharedWorker;
+  const w = createWhisperWorker();
+  sharedWorker = w;
+  w.onmessage = (ev: MessageEvent<WorkerOut>) => {
+    const msg = ev.data;
+    if (!msg) return;
+    if (msg.type === "progress") {
+      emitProgress(msg.pct, msg.status);
+    }
+  };
+  w.onerror = (ev) => {
+    console.error("[whisper-worker]", ev.message);
+  };
+  return w;
+}
+
+/**
+ * Ensure worker has loaded the model. Safe to call from preload + start.
+ */
+export async function preloadWhisperModel(
+  onProgress?: ProgressCb
+): Promise<void> {
+  await ensureWorkerReady(onProgress);
+}
+
+async function ensureWorkerReady(onProgress?: ProgressCb): Promise<void> {
+  if (workerReady && sharedWorker) {
+    onProgress?.(100, "المحرك جاهز");
+    return;
+  }
+  if (onProgress) progressListeners.add(onProgress);
+
+  if (!workerLoading) {
+    workerLoading = (async () => {
+      const w = getOrCreateWorker();
+      emitProgress(1, "تشغيل محرك التعرّف في الخلفية…");
+
+      await withTimeout(
+        new Promise<void>((resolve, reject) => {
+          const onMsg = (ev: MessageEvent<WorkerOut>) => {
+            const msg = ev.data;
+            if (!msg) return;
+            if (msg.type === "progress") {
+              emitProgress(msg.pct, msg.status);
+            } else if (msg.type === "ready") {
+              cleanup();
+              workerReady = true;
+              emitProgress(100, `المحرك جاهز (${msg.dtype})`);
+              resolve();
+            } else if (msg.type === "error" && msg.id == null) {
+              cleanup();
+              reject(new Error(msg.error));
+            }
+          };
+          const onErr = () => {
+            cleanup();
+            reject(new Error("فشل Worker التعرّف — أعد تحميل الصفحة."));
+          };
+          const cleanup = () => {
+            w.removeEventListener("message", onMsg);
+            w.removeEventListener("error", onErr);
+          };
+          w.addEventListener("message", onMsg);
+          w.addEventListener("error", onErr);
+          w.postMessage({ type: "load" });
+        }),
+        PIPELINE_TIMEOUT_MS,
+        "انتهت مهلة تحميل النموذج (3 دقائق). تحقق من الشبكة/الذاكرة."
+      );
+    })().catch((e) => {
+      workerLoading = null;
+      workerReady = false;
+      throw e;
+    });
+  }
+
+  try {
+    await workerLoading;
+  } finally {
+    if (onProgress) progressListeners.delete(onProgress);
+  }
+}
+
+function downsampleTo16k(input: Float32Array, fromRate: number): Float32Array {
+  if (fromRate === TARGET_SR) {
+    return new Float32Array(input);
+  }
+  // Linear interpolation — better Arabic quality than nearest-neighbor
+  const ratio = fromRate / TARGET_SR;
+  const newLen = Math.max(1, Math.floor(input.length / ratio));
+  const out = new Float32Array(newLen);
+  for (let i = 0; i < newLen; i++) {
+    const src = i * ratio;
+    const i0 = Math.floor(src);
+    const i1 = Math.min(i0 + 1, input.length - 1);
+    const t = src - i0;
+    out[i] = (input[i0] ?? 0) * (1 - t) + (input[i1] ?? 0) * t;
+  }
+  return out;
+}
+
+/**
+ * Conservative merge: prefer extension / overlap, avoid gluing unrelated windows
+ * into multi-ayah hallucinations.
+ */
+function mergeTranscript(base: string, next: string): string {
+  const a = (base || "").trim();
+  const b = (next || "").trim();
+  if (!b) return a;
+  if (!a) return b;
+  if (a === b) return a;
+  if (a.endsWith(b)) return a;
+  if (b.startsWith(a)) return b;
+  if (a.includes(b) && b.length >= 4) return a;
+
+  // Character overlap at boundary
+  const max = Math.min(a.length, b.length, 48);
+  for (let n = max; n >= 4; n--) {
+    if (a.slice(-n) === b.slice(0, n)) {
+      return (a + b.slice(n)).replace(/\s+/g, " ").trim();
+    }
+  }
+
+  const aWords = a.split(/\s+/).filter(Boolean);
+  const bWords = b.split(/\s+/).filter(Boolean);
+
+  // Word-level overlap
+  for (let k = Math.min(6, aWords.length, bWords.length); k >= 2; k--) {
+    if (aWords.slice(-k).join(" ") === bWords.slice(0, k).join(" ")) {
+      return [...aWords, ...bWords.slice(k)].join(" ").trim();
+    }
+  }
+
+  // If new window is mostly a re-say of the tail, keep longer of the two tails
+  const tail = aWords.slice(-8).join(" ");
+  if (tail && b.includes(tail.slice(0, Math.min(12, tail.length)))) {
+    // Prefer appending only novel suffix words
+    let start = 0;
+    for (let k = Math.min(bWords.length, 6); k >= 1; k--) {
+      const head = bWords.slice(0, k).join(" ");
+      if (a.endsWith(head) || a.includes(head)) {
+        start = k;
+        break;
+      }
+    }
+    if (start > 0 && start < bWords.length) {
+      return [...aWords, ...bWords.slice(start)].join(" ").trim();
+    }
+  }
+
+  // Default: append (window captured new speech)
+  return (a + " " + b).replace(/\s+/g, " ").trim();
+}
+
+function rmsOf(audio: Float32Array): number {
+  let sum = 0;
+  const step = 8;
+  let n = 0;
+  for (let i = 0; i < audio.length; i += step) {
+    sum += audio[i] * audio[i];
+    n++;
+  }
+  return Math.sqrt(sum / Math.max(1, n));
+}
+
+function workerInfer(
+  pcm: Float32Array,
+  initialPrompt?: string
+): Promise<string> {
+  const w = getOrCreateWorker();
+  const id = inferSeq++;
+  const buffer = pcm.buffer.slice(
+    pcm.byteOffset,
+    pcm.byteOffset + pcm.byteLength
+  ) as ArrayBuffer;
+
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("انتهت مهلة الاستدلال الصوتي (45ث)."));
+    }, 45_000);
+
+    const onMsg = (ev: MessageEvent<WorkerOut>) => {
+      const msg = ev.data;
+      if (!msg) return;
+      if (msg.type === "result" && msg.id === id) {
+        cleanup();
+        resolve(msg.text || "");
+      } else if (msg.type === "error" && msg.id === id) {
+        cleanup();
+        reject(new Error(msg.error));
+      }
+    };
+    const onErr = () => {
+      cleanup();
+      reject(new Error("انهار Worker أثناء الاستدلال."));
+    };
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      w.removeEventListener("message", onMsg);
+      w.removeEventListener("error", onErr);
+    };
+    w.addEventListener("message", onMsg);
+    w.addEventListener("error", onErr);
+    w.postMessage(
+      {
+        type: "infer",
+        id,
+        pcm: buffer,
+        initialPrompt: initialPrompt || "",
+      },
+      [buffer]
+    );
+  });
 }
 
 export class WasmWhisperSpeechSession {
@@ -352,26 +337,34 @@ export class WasmWhisperSpeechSession {
   private inputRate = 48000;
   private tickTimer: ReturnType<typeof setInterval> | null = null;
   private inferring = false;
+  private lastInferAt = 0;
   private lastEmitted = "";
-  /** Prevent double-start hang */
   private startLock = false;
-  /** Bumps on dispose/stop so in-flight start aborts cleanly */
   private startEpoch = 0;
+  /** Quran words expected next — biases Whisper decoder */
+  private initialPrompt = "";
+  private lastErrorAt = 0;
+
+  /** Update expected Quran context while listening (call from UI as cursor moves). */
+  setExpectedPrompt(text: string) {
+    this.initialPrompt = (text || "").trim().slice(0, 220);
+  }
 
   async start(
     handlers: SpeechHandlers = {},
     opts?: {
       preserveBuffer?: boolean;
       onModelProgress?: ProgressCb;
-      /** UI phase hooks */
       onPhase?: (phase: "mic" | "model" | "ready") => void;
+      /** Expected upcoming Quran text for Whisper initial_prompt */
+      expectedPrompt?: string;
     }
   ): Promise<{ ok: boolean; error?: string }> {
     if (this.startLock) {
       return {
         ok: false,
         error:
-          "التشغيل قيد التحضير بالفعل. انتظر أو اضغط «إلغاء» إن ظهر، أو أعد تحميل الصفحة.",
+          "التشغيل قيد التحضير بالفعل. انتظر أو اضغط «إلغاء»، أو أعد تحميل الصفحة.",
       };
     }
     this.startLock = true;
@@ -386,14 +379,15 @@ export class WasmWhisperSpeechSession {
       return { ok: false, error: "الميكروفون غير متاح على هذا الجهاز." };
     }
 
-    // Clean any half-open session from a previous failed start
     this.cleanupAudio();
-
     this.destroyed = false;
     this.handlers = handlers;
     if (!opts?.preserveBuffer) {
       this.finalBuffer = "";
       this.lastEmitted = "";
+    }
+    if (opts?.expectedPrompt) {
+      this.initialPrompt = opts.expectedPrompt.trim().slice(0, 220);
     }
     this.wantContinue = true;
     this.running = false;
@@ -405,15 +399,13 @@ export class WasmWhisperSpeechSession {
       const result = await withTimeout(
         this.runStartSequence(opts, aborted),
         START_TIMEOUT_MS,
-        "انتهت المهلة الكلية لبدء التسميع (أكثر من 3 دقائق). أعد المحاولة بعد التحقق من الشبكة والذاكرة."
+        "انتهت المهلة الكلية لبدء التسميع. أعد المحاولة."
       );
-
       if (aborted()) {
         this.cleanupAudio();
         this.startLock = false;
         return { ok: false, error: "تم إلغاء التشغيل." };
       }
-
       this.startLock = false;
       return result;
     } catch (e) {
@@ -437,15 +429,12 @@ export class WasmWhisperSpeechSession {
           preserveBuffer?: boolean;
           onModelProgress?: ProgressCb;
           onPhase?: (phase: "mic" | "model" | "ready") => void;
+          expectedPrompt?: string;
         }
       | undefined,
     aborted: () => boolean
   ): Promise<{ ok: boolean; error?: string }> {
-    /**
-     * CRITICAL: getUserMedia FIRST while still in user-gesture chain.
-     * Awaiting model download before getUserMedia causes permanent hang
-     * on many Android Chrome builds (permission never prompts / never resolves).
-     */
+    // Mic FIRST (user-gesture chain)
     opts?.onPhase?.("mic");
     const stream = await withTimeout(
       navigator.mediaDevices.getUserMedia({
@@ -457,7 +446,7 @@ export class WasmWhisperSpeechSession {
         video: false,
       }),
       MIC_TIMEOUT_MS,
-      "انتهت مهلة طلب الميكروفون. اسمح بالإذن إن ظهر، أو أعد تحميل الصفحة."
+      "انتهت مهلة طلب الميكروفون. اسمح بالإذن إن ظهر."
     );
     if (aborted()) {
       stream.getTracks().forEach((t) => t.stop());
@@ -465,12 +454,10 @@ export class WasmWhisperSpeechSession {
     }
     this.stream = stream;
 
-    // Then load model (mic already open — gesture constraint satisfied)
+    // Model load in Worker (UI stays responsive during download)
     opts?.onPhase?.("model");
-    await ensurePipeline(opts?.onModelProgress);
-    if (aborted()) {
-      return { ok: false, error: "تم إلغاء التشغيل." };
-    }
+    await ensureWorkerReady(opts?.onModelProgress);
+    if (aborted()) return { ok: false, error: "تم إلغاء التشغيل." };
 
     const W = window as unknown as {
       AudioContext?: typeof AudioContext;
@@ -479,7 +466,7 @@ export class WasmWhisperSpeechSession {
     const Ctx = W.AudioContext || W.webkitAudioContext;
     if (!Ctx) {
       this.cleanupAudio();
-      return { ok: false, error: "AudioContext غير مدعوم على هذا المتصفح." };
+      return { ok: false, error: "AudioContext غير مدعوم." };
     }
 
     const ctx = new Ctx();
@@ -489,17 +476,13 @@ export class WasmWhisperSpeechSession {
       await withTimeout(
         ctx.resume(),
         AUDIO_RESUME_MS,
-        "تعذّر تنشيط AudioContext. اضغط الشاشة مرة ثم أعد «ابدأ»."
+        "تعذّر تنشيط AudioContext. اضغط الشاشة ثم أعد «ابدأ»."
       );
     }
-    if (aborted()) {
-      return { ok: false, error: "تم إلغاء التشغيل." };
-    }
+    if (aborted()) return { ok: false, error: "تم إلغاء التشغيل." };
 
     const source = ctx.createMediaStreamSource(stream);
     this.source = source;
-    // ScriptProcessor is deprecated but still the most reliable PCM path on mobile
-    // without a separate AudioWorklet module URL.
     const processor = ctx.createScriptProcessor(4096, 1, 1);
     this.processor = processor;
 
@@ -530,10 +513,11 @@ export class WasmWhisperSpeechSession {
     opts?.onPhase?.("ready");
 
     if (this.tickTimer) clearInterval(this.tickTimer);
+    // Poll often but runInferenceTick self-throttles
     this.tickTimer = setInterval(() => {
       void this.runInferenceTick();
-    }, TICK_SEC * 1000);
-    window.setTimeout(() => void this.runInferenceTick(), 1200);
+    }, 400);
+    window.setTimeout(() => void this.runInferenceTick(), 900);
 
     return { ok: true };
   }
@@ -542,6 +526,7 @@ export class WasmWhisperSpeechSession {
     if (!this.sampleCount) return null;
     const need = Math.floor(WINDOW_SEC * this.inputRate);
     const take = Math.min(this.sampleCount, need);
+    if (take < this.inputRate * 0.5) return null;
     const out = new Float32Array(take);
     let offset = take;
     for (let i = this.samples.length - 1; i >= 0 && offset > 0; i--) {
@@ -555,38 +540,46 @@ export class WasmWhisperSpeechSession {
 
   private async runInferenceTick() {
     if (!this.wantContinue || this.destroyed || this.inferring) return;
-    if (!sharedPipeline) return;
-    const audio = this.collectWindow();
-    if (!audio || audio.length < TARGET_SR * 0.6) return;
+    if (!workerReady) return;
 
-    let sum = 0;
-    for (let i = 0; i < audio.length; i += 8) sum += audio[i] * audio[i];
-    const rms = Math.sqrt(sum / (audio.length / 8));
-    if (rms < 0.008) return;
+    const now = Date.now();
+    if (now - this.lastInferAt < MIN_INFER_GAP_MS) return;
+
+    const audio = this.collectWindow();
+    if (!audio || audio.length < TARGET_SR * 0.5) return;
+
+    const rms = rmsOf(audio);
+    if (rms < RMS_MIN) return;
 
     this.inferring = true;
+    this.lastInferAt = now;
     try {
-      // MUST be raw Float32Array @ 16 kHz — not { array, sampling_rate } Object
-      const pcm = toWhisperPcm(audio);
-      const result = await sharedPipeline(pcm, {
-        language: "arabic",
-        task: "transcribe",
-        return_timestamps: false,
-      });
-      const raw = Array.isArray(result) ? result[0]?.text : result?.text;
-      const text = (raw || "").trim();
+      // Copy PCM for worker (transferable buffer — main keeps ring untouched)
+      const pcm = new Float32Array(audio.length);
+      pcm.set(audio);
+
+      const text = await workerInfer(pcm, this.initialPrompt);
+      if (!this.wantContinue || this.destroyed) return;
       if (!text) return;
 
       this.finalBuffer = mergeTranscript(this.finalBuffer, text);
       if (this.finalBuffer !== this.lastEmitted) {
         this.lastEmitted = this.finalBuffer;
-        this.handlers.onInterim?.(this.finalBuffer);
-        this.handlers.onFinal?.(this.finalBuffer);
+        // Defer React updates to next macrotask so we never nest heavy work
+        const snap = this.finalBuffer;
+        queueMicrotask(() => {
+          if (!this.wantContinue || this.destroyed) return;
+          this.handlers.onInterim?.(snap);
+          this.handlers.onFinal?.(snap);
+        });
       }
     } catch (e) {
       const msg = formatErr(e);
-      // Surface once so UI is not silent forever
-      this.handlers.onError?.("خطأ أثناء التعرّف: " + msg);
+      // Throttle error spam (max 1 / 8s)
+      if (Date.now() - this.lastErrorAt > 8000) {
+        this.lastErrorAt = Date.now();
+        this.handlers.onError?.("خطأ أثناء التعرّف: " + msg);
+      }
     } finally {
       this.inferring = false;
     }
@@ -616,7 +609,10 @@ export class WasmWhisperSpeechSession {
     handlers?: SpeechHandlers
   ): Promise<{ ok: boolean; error?: string }> {
     if (handlers) this.handlers = handlers;
-    return this.start(this.handlers, { preserveBuffer: true });
+    return this.start(this.handlers, {
+      preserveBuffer: true,
+      expectedPrompt: this.initialPrompt,
+    });
   }
 
   dispose() {
@@ -662,6 +658,7 @@ export class WasmWhisperSpeechSession {
     }
     this.samples = [];
     this.sampleCount = 0;
+    this.inferring = false;
   }
 
   isRunning() {
@@ -681,5 +678,6 @@ export function isWasmSpeechSupported(): boolean {
     webkitAudioContext?: unknown;
   };
   const hasAudio = Boolean(W.AudioContext || W.webkitAudioContext);
-  return Boolean(window.isSecureContext && hasMic && hasAudio);
+  const hasWorker = typeof Worker !== "undefined";
+  return Boolean(window.isSecureContext && hasMic && hasAudio && hasWorker);
 }

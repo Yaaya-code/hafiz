@@ -23,6 +23,8 @@ export type ContinuousStartOpts = {
   preserveBuffer?: boolean;
   onModelProgress?: (pct: number, status: string) => void;
   onPhase?: (phase: "mic" | "model" | "ready") => void;
+  /** Expected upcoming Quran words — biases local Whisper decoder */
+  expectedPrompt?: string;
   /** Force engine (tests) */
   forceEngine?: ContinuousEngine;
 };
@@ -65,6 +67,7 @@ export class ContinuousArabicSpeech {
           preserveBuffer: opts?.preserveBuffer,
           onModelProgress: opts?.onModelProgress,
           onPhase: opts?.onPhase,
+          expectedPrompt: opts?.expectedPrompt,
         });
         return { ...r, engine: this.engine };
       } catch (e) {
@@ -133,6 +136,11 @@ export class ContinuousArabicSpeech {
       return this.wasm?.isRunning() || false;
     }
     return this.web?.isRunning() || false;
+  }
+
+  /** Keep Whisper initial_prompt aligned with match cursor */
+  setExpectedPrompt(text: string) {
+    this.wasm?.setExpectedPrompt(text);
   }
 }
 

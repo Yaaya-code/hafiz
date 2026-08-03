@@ -16,8 +16,8 @@ import {
 } from "@/lib/quran/speech-recognition";
 import { isWasmSpeechSupported } from "@/lib/quran/wasm-whisper-session";
 
-/** Bump when model options change (e.g. fp32 vs quantized) so we re-fetch. */
-const PRELOAD_FLAG = "hafiz_whisper_preload_v2_fp32";
+/** Bump when model/worker path changes so we re-fetch / re-init. */
+const PRELOAD_FLAG = "hafiz_whisper_preload_v3_worker";
 
 function scheduleIdle(fn: () => void, timeoutMs: number) {
   if (typeof window === "undefined") return () => {};

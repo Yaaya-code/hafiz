@@ -146,6 +146,18 @@ function DirectSessionInner() {
   const [matchCursor, setMatchCursor] = useState(0);
   const matchCursorRef = useRef(0);
 
+  /** Build Whisper initial_prompt from upcoming expected words (local bias). */
+  const buildExpectedPrompt = useCallback(
+    (cursor: number) => {
+      const flat = wordStream.flatMap((a) => a.displayWords);
+      if (!flat.length) return "";
+      const from = Math.max(0, cursor);
+      // ~12–18 words ahead is enough context without bloating the decoder
+      return flat.slice(from, from + 16).join(" ");
+    },
+    [wordStream]
+  );
+
   const applyTranscript = useCallback(
     (text: string) => {
       transcriptRef.current = text;
@@ -158,6 +170,8 @@ function DirectSessionInner() {
       setAccuracy(result.stats.accuracy);
       setCurrentAyah(result.currentAyah);
       setMatchCursor(result.cursor);
+      // Keep decoder bias on the words the user is about to recite
+      speechRef.current?.setExpectedPrompt(buildExpectedPrompt(result.cursor));
       // Auto-clear one-shot hint when user advances past the hinted word
       if (hintOn && result.cursor > matchCursorRef.current) {
         setHintOn(false);
@@ -192,7 +206,7 @@ function DirectSessionInner() {
         });
       }
     },
-    [wordStream, toAyah, surahNumber, fromAyah, hintOn]
+    [wordStream, toAyah, surahNumber, fromAyah, hintOn, buildExpectedPrompt]
   );
 
   const killSpeech = useCallback(() => {
@@ -358,13 +372,14 @@ function DirectSessionInner() {
     try {
       const r = await speechRef.current.start(speechHandlers(), {
         preserveBuffer: preserve,
+        expectedPrompt: buildExpectedPrompt(matchCursorRef.current),
         onPhase: (p) => {
           if (p === "mic") {
             setPhase("requesting_mic");
             setModelStatus("طلب إذن الميكروفون…");
           } else if (p === "model") {
             setPhase("loading_model");
-            setModelStatus("تحميل/تجهيز النموذج…");
+            setModelStatus("تحميل/تجهيز النموذج في الخلفية…");
           } else if (p === "ready") {
             setModelStatus("المايك جاهز…");
             setModelPct(100);

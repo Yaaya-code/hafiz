@@ -25,6 +25,8 @@ export type ContinuousStartOpts = {
   onPhase?: (phase: "mic" | "model" | "ready") => void;
   /** Expected upcoming Quran words — biases local Whisper decoder */
   expectedPrompt?: string;
+  /** wasm only: live ticks vs mobile batch record-then-analyze */
+  mode?: "live" | "batch";
   /** Force engine (tests) */
   forceEngine?: ContinuousEngine;
 };
@@ -82,6 +84,7 @@ export class ContinuousArabicSpeech {
           onModelProgress: opts?.onModelProgress,
           onPhase: opts?.onPhase,
           expectedPrompt: opts?.expectedPrompt,
+          mode: opts?.mode,
         });
         return { ...r, engine: this.engine };
       } catch (e) {
@@ -155,6 +158,22 @@ export class ContinuousArabicSpeech {
   /** Keep Whisper initial_prompt aligned with match cursor */
   setExpectedPrompt(text: string) {
     this.wasm?.setExpectedPrompt(text);
+  }
+
+  isBatchMode() {
+    return this.wasm?.isBatchMode() || false;
+  }
+
+  /** Mobile Batch MVP: stop recording and run one (chunked) offline transcription */
+  async finishBatchTranscription(): Promise<{
+    ok: boolean;
+    text?: string;
+    error?: string;
+  }> {
+    if (!this.wasm || !this.wasm.isBatchMode()) {
+      return { ok: false, error: "وضع Batch غير نشط." };
+    }
+    return this.wasm.finishBatchTranscription();
   }
 }
 

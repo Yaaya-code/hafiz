@@ -328,18 +328,22 @@ export function matchLive(
     // 4) STRICT path — profile decides comfort vs harshness
     if (strict) {
       if (isWebSpeech) {
-        // CLASSIC DESKTOP: soft-ignore unmatched tokens; never freeze on noise.
-        // Do NOT paint red aggressively — Web Speech interim noise is common.
+        // Desktop balance: ignore noise / growing interim — but punish clear wrongs.
+        // Never wait forever for the exact word (that killed the "test" UX).
         if (softInterim) {
           status[oi] = "current";
           prevSpoken = sWord;
           si++;
           continue;
         }
-        if (isMeaningfulSpokenToken(sWord)) {
-          extra++;
+        if (!isMeaningfulSpokenToken(sWord)) {
+          si++;
+          continue;
         }
+        // Meaningful token that is not a match/partial → count as incorrect
+        markIncorrect(oi, sWord);
         prevSpoken = sWord;
+        oi++;
         si++;
         continue;
       }

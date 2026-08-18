@@ -63,14 +63,24 @@ describe("matchLive whisper — no premature reveal", () => {
   });
 });
 
-describe("matchLive webspeech profile — classic soft-ignore", () => {
-  it("does not paint red on unmatched noise (desktop golden behavior)", () => {
+describe("matchLive webspeech profile — balance noise vs real errors", () => {
+  it("marks clear wrong words red (does not wait forever)", () => {
     const r = matchLive(fatihaStart, "كتاب", {
       interim: false,
       strict: true,
       profile: "webspeech",
     });
-    // Soft-ignore: stay on first word without incorrect
+    expect(r.display[0].status).toBe("incorrect");
+    expect(r.display[0].revealed).toBe(true);
+    expect(r.cursor).toBeGreaterThanOrEqual(1);
+  });
+
+  it("still soft-ignores tiny noise tokens", () => {
+    const r = matchLive(fatihaStart, ".", {
+      interim: false,
+      strict: true,
+      profile: "webspeech",
+    });
     expect(r.display[0].status).not.toBe("incorrect");
     expect(r.cursor).toBe(0);
   });

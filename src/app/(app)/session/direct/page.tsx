@@ -54,7 +54,11 @@ type Phase =
   | "paused"
   | "done"
   | "loading_model"
-  | "requesting_mic";
+  | "requesting_mic"
+  /** Mobile Batch MVP: mic open, no live inference */
+  | "recording"
+  /** Mobile Batch MVP: Worker analyzing full clip */
+  | "analyzing";
 
 export default function DirectSessionPage() {
   return (
@@ -137,6 +141,13 @@ function DirectSessionInner() {
       resolveMatchProfile(
         pickSpeechEngine() === "wasm-whisper" ? "whisper" : "webspeech"
       ),
+    []
+  );
+
+  /** Mobile + Whisper → Batch MVP (record then analyze). Desktop stays live. */
+  const useMobileBatch = useMemo(
+    () =>
+      isMobileSpeechEnvironment() && pickSpeechEngine() === "wasm-whisper",
     []
   );
 
@@ -266,12 +277,24 @@ function DirectSessionInner() {
    * Engine-level timeouts should fire first; this is a last-resort UI unlock.
    */
   useEffect(() => {
-    if (phase !== "loading_model" && phase !== "requesting_mic") return;
-    const ms = phase === "requesting_mic" ? 35_000 : 210_000;
+    if (
+      phase !== "loading_model" &&
+      phase !== "requesting_mic" &&
+      phase !== "analyzing"
+    ) {
+      return;
+    }
+    const ms =
+      phase === "requesting_mic"
+        ? 35_000
+        : phase === "analyzing"
+          ? 180_000
+          : 210_000;
     const t = window.setTimeout(() => {
       if (
         phaseRef.current !== "loading_model" &&
-        phaseRef.current !== "requesting_mic"
+        phaseRef.current !== "requesting_mic" &&
+        phaseRef.current !== "analyzing"
       ) {
         return;
       }
@@ -283,11 +306,14 @@ function DirectSessionInner() {
       speechRef.current = null;
       setSpeechError(
         phase === "requesting_mic"
-          ? "انتهت مهلة الميكروفون من الواجهة. اسمح بالإذن إن طُلب، ثم أعد «ابدأ التسميع»."
-          : "انتهت مهلة تحميل المحرك من الواجهة. غالباً شبكة بطيئة أو ذاكرة منخفضة. أعد المحاولة بعد إغلاق تبويبات أخرى."
+          ? "انتهت مهلة الميكروفون من الواجهة. اسمح بالإذن إن طُلب، ثم أعد المحاولة."
+          : phase === "analyzing"
+            ? "انتهت مهلة تحليل التسجيل. جرّب مقطعاً أقصر أو أعد المحاولة."
+            : "انتهت مهلة تحميل المحرك من الواجهة. أعد المحاولة بعد إغلاق تبويبات أخرى."
       );
       setPhase("idle");
       setModelStatus(null);
+      setStatusMsg(null);
     }, ms);
     return () => window.clearTimeout(t);
   }, [phase]);
@@ -357,7 +383,8 @@ function DirectSessionInner() {
     // Prevent double-tap stacking another start while first is mid-flight
     if (
       phaseRef.current === "loading_model" ||
-      phaseRef.current === "requesting_mic"
+      phaseRef.current === "requesting_mic" ||
+      phaseRef.current === "analyzing"
     ) {
       setStatusMsg(
         "التحضير جارٍ… لا تضغط مراراً. استخدم «إلغاء» إن طال الانتظار."
@@ -387,6 +414,7 @@ function DirectSessionInner() {
 
     if (!speechRef.current) speechRef.current = new ContinuousArabicSpeech();
 
+    const batch = useMobileBatch;
     // Mic first phase is inside wasm start; show requesting_mic immediately
     setPhase("requesting_mic");
     setModelStatus("طلب إذن الميكروفون…");
@@ -397,15 +425,20 @@ function DirectSessionInner() {
       const r = await speechRef.current.start(speechHandlers(), {
         preserveBuffer: preserve,
         expectedPrompt: buildExpectedPrompt(matchCursorRef.current),
+        mode: batch ? "batch" : "live",
         onPhase: (p) => {
           if (p === "mic") {
             setPhase("requesting_mic");
             setModelStatus("طلب إذن الميكروفون…");
           } else if (p === "model") {
             setPhase("loading_model");
-            setModelStatus("تحميل/تجهيز النموذج في الخلفية…");
+            setModelStatus(
+              batch
+                ? "تحميل المحرك (مرة واحدة)…"
+                : "تحميل/تجهيز النموذج في الخلفية…"
+            );
           } else if (p === "ready") {
-            setModelStatus("المايك جاهز…");
+            setModelStatus(batch ? "جاهز للتسجيل…" : "المايك جاهز…");
             setModelPct(100);
           }
         },
@@ -427,17 +460,26 @@ function DirectSessionInner() {
       }
 
       setEngineLabel(
-        r.engine === "wasm-whisper"
-          ? "محرك مجاني مستمر (Whisper داخل المتصفح)"
-          : "محرك المتصفح (Web Speech)"
+        batch
+          ? "موبايل: تسجيل ثم تحليل (Batch) — مجاني محلي"
+          : r.engine === "wasm-whisper"
+            ? "محرك مجاني مستمر (Whisper داخل المتصفح)"
+            : "محرك المتصفح (Web Speech)"
       );
       setModelStatus(null);
       setModelPct(100);
-      setPhase("listening");
-      if (r.engine === "wasm-whisper") {
+      if (batch) {
+        setPhase("recording");
         setStatusMsg(
-          "المايك مفتوح باستمرار. التعرّف يعمل داخل جهازك مجاناً (نوافذ قصيرة)."
+          "المايك مفتوح — اقرأ بحرية (حتى المقاطع الطويلة). يمكنك الضغط على «تم التسجيل» متى انتهيت. التحضير الصوتي يتم في الخلفية بصمت بدون ألوان أثناء القراءة."
         );
+      } else {
+        setPhase("listening");
+        if (r.engine === "wasm-whisper") {
+          setStatusMsg(
+            "المايك مفتوح باستمرار. التعرّف يعمل داخل جهازك مجاناً (نوافذ قصيرة)."
+          );
+        }
       }
     } catch (e) {
       const msg =
@@ -455,6 +497,76 @@ function DirectSessionInner() {
         /* ignore */
       }
       speechRef.current = null;
+    }
+  }
+
+  /** Mobile Batch: stop mic → Worker analyzes full clip → matchLive once */
+  async function finishMobileBatch() {
+    if (!speechRef.current) return;
+    setSpeechError(null);
+    setPhase("analyzing");
+    setStatusMsg("جاري تحليل التسجيل داخل جهازك… لن يستغرق ذلك طويلاً.");
+    setModelStatus("تحليل…");
+    try {
+      const r = await speechRef.current.finishBatchTranscription();
+      if (!r.ok) {
+        setSpeechError(r.error || "فشل تحليل التسجيل.");
+        setPhase("idle");
+        setModelStatus(null);
+        setStatusMsg(null);
+        return;
+      }
+      const text = r.text || "";
+      transcriptRef.current = text;
+      const result = matchLive(wordStream, text, {
+        interim: false,
+        strict: true,
+        profile: "whisper",
+      });
+      setLiveWords(result.display);
+      setAccuracy(result.stats.accuracy);
+      setCurrentAyah(result.currentAyah);
+      setMatchCursor(result.cursor);
+      matchCursorRef.current = result.cursor;
+      setModelStatus(null);
+
+      const allCorrect =
+        result.display.length > 0 &&
+        result.display.every((w) => w.status === "correct");
+
+      if (allCorrect) {
+        setPhase("done");
+        setReport(
+          finalFeedbackAr(result.stats, result.lastCompletedAyah, toAyah)
+        );
+        saveSurahRecitationProgress({
+          surahNumber,
+          lastCompletedAyah: result.lastCompletedAyah,
+          continueFromAyah: Math.min(
+            toAyah,
+            (result.lastCompletedAyah || fromAyah) + 1
+          ),
+          totalAyahs: toAyah,
+          lastSessionAt: new Date().toISOString(),
+          accuracy: result.stats.accuracy,
+          mistakesCount: result.stats.incorrect,
+        });
+        setStatusMsg(null);
+      } else {
+        setPhase("paused");
+        setStatusMsg(
+          "انتهى التحليل. راجع الكلمات الحمراء، ثم «أعد التسجيل» أو «إنهاء»."
+        );
+        setReport(
+          finalFeedbackAr(result.stats, result.lastCompletedAyah, toAyah)
+        );
+      }
+    } catch (e) {
+      setSpeechError(
+        "فشل التحليل: " + (e instanceof Error ? e.message : String(e))
+      );
+      setPhase("idle");
+      setModelStatus(null);
     }
   }
 
@@ -635,16 +747,23 @@ function DirectSessionInner() {
   }
 
   const busy =
-    phase === "loading_model" || phase === "requesting_mic";
+    phase === "loading_model" ||
+    phase === "requesting_mic" ||
+    phase === "analyzing";
 
   function onPrimaryAction() {
     if (busy) return;
+    if (phase === "recording") {
+      void finishMobileBatch();
+      return;
+    }
     if (phase === "listening") {
       stopListening();
       return;
     }
     if (phase === "paused") {
-      void continueListening();
+      // Mobile batch: re-record. Desktop: continue live listening.
+      void startListening(useMobileBatch ? false : true);
       return;
     }
     if (phase === "done") {
@@ -659,13 +778,21 @@ function DirectSessionInner() {
       ? "طلب الميكروفون…"
       : phase === "loading_model"
         ? "تحميل المحرك…"
-        : phase === "listening"
-          ? "إيقاف"
-          : phase === "paused"
-            ? "متابعة التسميع"
-            : phase === "done"
-              ? "العودة للرئيسية"
-              : "ابدأ التسميع";
+        : phase === "analyzing"
+          ? "جاري التحليل…"
+          : phase === "recording"
+            ? "تم التسجيل"
+            : phase === "listening"
+              ? "إيقاف"
+              : phase === "paused"
+                ? useMobileBatch
+                  ? "أعد التسجيل"
+                  : "متابعة التسميع"
+                : phase === "done"
+                  ? "العودة للرئيسية"
+                  : useMobileBatch
+                    ? "ابدأ التسجيل"
+                    : "ابدأ التسميع";
 
   function renderWord(w: LiveDisplayWord) {
     /**
@@ -739,6 +866,15 @@ function DirectSessionInner() {
                   يستمع
                 </Badge>
               )}
+              {phase === "recording" && (
+                <Badge variant="danger" className="gap-1">
+                  <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
+                  يسجّل
+                </Badge>
+              )}
+              {phase === "analyzing" && (
+                <Badge variant="warning">يحلّل…</Badge>
+              )}
               {phase === "paused" && <Badge variant="warning">متوقف</Badge>}
             </div>
           </div>
@@ -780,7 +916,9 @@ function DirectSessionInner() {
 
           {/* Primary actions — always on screen */}
           <div className="flex gap-2">
-            {(phase === "listening" || phase === "paused") && (
+            {(phase === "listening" ||
+              phase === "paused" ||
+              phase === "recording") && (
               <Button
                 type="button"
                 variant="ghost"
@@ -790,7 +928,7 @@ function DirectSessionInner() {
                 إنهاء
               </Button>
             )}
-            {busy && (
+            {busy && phase !== "analyzing" && (
               <Button
                 type="button"
                 variant="ghost"
@@ -802,16 +940,21 @@ function DirectSessionInner() {
             )}
             <Button
               type="button"
-              variant={phase === "listening" ? "outline" : "premium"}
+              variant={
+                phase === "listening" || phase === "recording"
+                  ? "outline"
+                  : "premium"
+              }
               disabled={busy}
               className={cn(
                 "h-12 flex-1 text-base font-bold gap-2 rounded-xl",
                 phase !== "listening" &&
+                  phase !== "recording" &&
                   "shadow-[0_8px_24px_-8px_rgba(212,175,55,0.5)]"
               )}
               onClick={onPrimaryAction}
             >
-              {phase === "listening" ? (
+              {phase === "listening" || phase === "recording" ? (
                 <MicOff className="h-5 w-5" />
               ) : (
                 <Mic className="h-5 w-5" />
@@ -869,9 +1012,16 @@ function DirectSessionInner() {
           )}
           {engineLabel && phase === "idle" && (
             <p className="text-center text-[10px] text-muted-foreground">
-              {isMobileSpeechEnvironment()
-                ? "على الموبايل: محرك Whisper مجاني داخل المتصفح (بدون سحابة مدفوعة وبدون نغمة إعادة تشغيل)."
-                : engineLabel}
+              {useMobileBatch
+                ? "على الموبايل: تسجيل مفتوح + تحليل صامت في الخلفية كل ~30ث. النتائج والألوان تظهر فقط بعد «تم التسجيل»."
+                : isMobileSpeechEnvironment()
+                  ? "على الموبايل: محرك Whisper مجاني داخل المتصفح."
+                  : engineLabel}
+            </p>
+          )}
+          {phase === "analyzing" && (
+            <p className="text-center text-[11px] text-[#D4AF37] font-medium">
+              جاري تحليل التسجيل داخل جهازك… أبقِ الصفحة مفتوحة.
             </p>
           )}
         </div>

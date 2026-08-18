@@ -31,9 +31,13 @@ describe("wordsMatchStrict", () => {
   });
 });
 
-describe("matchLive strict — no premature reveal", () => {
+describe("matchLive whisper — no premature reveal", () => {
   it("does not reveal or mark current on next word after first match", () => {
-    const r = matchLive(fatihaStart, "بسم", { interim: true, strict: true });
+    const r = matchLive(fatihaStart, "بسم", {
+      interim: true,
+      strict: true,
+      profile: "whisper",
+    });
     const first = r.display[0];
     const second = r.display[1];
     expect(first.status).toBe("correct");
@@ -48,6 +52,7 @@ describe("matchLive strict — no premature reveal", () => {
     const r = matchLive(fatihaStart, "بسم الله", {
       interim: true,
       strict: true,
+      profile: "whisper",
     });
     const pending = r.display.filter((w) => w.status === "pending");
     expect(pending.length).toBeGreaterThan(0);
@@ -58,12 +63,26 @@ describe("matchLive strict — no premature reveal", () => {
   });
 });
 
-describe("matchLive strict — mistakes not ignored", () => {
+describe("matchLive webspeech profile — classic soft-ignore", () => {
+  it("does not paint red on unmatched noise (desktop golden behavior)", () => {
+    const r = matchLive(fatihaStart, "كتاب", {
+      interim: false,
+      strict: true,
+      profile: "webspeech",
+    });
+    // Soft-ignore: stay on first word without incorrect
+    expect(r.display[0].status).not.toBe("incorrect");
+    expect(r.cursor).toBe(0);
+  });
+});
+
+describe("matchLive whisper profile — mistakes not ignored", () => {
   it("marks expected word incorrect when spoken is clearly wrong", () => {
     // First word wrong committed token (non-interim so last token is judged)
     const r = matchLive(fatihaStart, "كتاب", {
       interim: false,
       strict: true,
+      profile: "whisper",
     });
     expect(r.display[0].status).toBe("incorrect");
     expect(r.display[0].revealed).toBe(true);
@@ -81,6 +100,7 @@ describe("matchLive strict — mistakes not ignored", () => {
     const r2 = matchLive(fatihaStart, "كتاب الله", {
       interim: false,
       strict: true,
+      profile: "whisper",
     });
     expect(r2.display[0].status).toBe("incorrect");
     // Second spoken may match second expected after first marked wrong
@@ -94,6 +114,7 @@ describe("matchLive strict — mistakes not ignored", () => {
     const r = matchLive(fatihaStart, "بسم الله الرحمن", {
       interim: true,
       strict: true,
+      profile: "whisper",
     });
     const greens = r.display.filter((w) => w.status === "correct");
     expect(greens.length).toBeGreaterThanOrEqual(2);

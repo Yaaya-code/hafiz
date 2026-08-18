@@ -16,15 +16,30 @@ import {
   quranTokenize,
   wordsMatch,
 } from "./quran-phonetic";
+import { isMobileSpeechEnvironment } from "./speech-recognition";
 
 /**
- * ASR-tolerant Arabic normalization for Whisper-tiny typos before matching.
- * Strips tashkeel, unifies hamza/alif, ة→ه, ى→ي.
- * Applied to BOTH expected ayah text and model transcript.
+ * ASR-tolerant Arabic normalization (tashkeel↓ hamza→ا ة→ه ى→ي).
+ * Used heavily by the Whisper profile; Web Speech also benefits from base normalize.
  */
 export function normalizeArabicText(text: string): string {
-  // Delegate to shared Quran normalizer (same rules, single source of truth)
   return quranNormalize(text || "");
+}
+
+/**
+ * Matching profiles (Progressive Enhancement):
+ * - webspeech: comfortable classic logic (desktop golden era — soft-ignore noise)
+ * - whisper: stricter live rules tuned for Whisper-tiny noise / no premature red spam
+ */
+export type MatchProfile = "webspeech" | "whisper";
+
+/** Resolve profile: explicit opt wins; else desktop → webspeech, mobile → whisper. */
+export function resolveMatchProfile(
+  explicit?: MatchProfile
+): MatchProfile {
+  if (explicit === "webspeech" || explicit === "whisper") return explicit;
+  if (typeof window === "undefined") return "webspeech";
+  return isMobileSpeechEnvironment() ? "whisper" : "webspeech";
 }
 
 export type LiveAyahWords = {
@@ -93,11 +108,16 @@ export type MatchLiveOptions = {
    */
   streaming?: boolean;
   /**
-   * Strict mode (default for direct):
-   * - never reveal the next word until it is spoken
-   * - never soft-ignore meaningful wrong words
+   * Strict cursor (stay on current expected word). Behavior of mismatches
+   * depends on `profile`.
    */
   strict?: boolean;
+  /**
+   * webspeech = classic comfortable desktop matching (pre-Whisper era).
+   * whisper = mobile/WASM-oriented rules.
+   * Omit to auto-pick from environment (desktop→webspeech, mobile→whisper).
+   */
+  profile?: MatchProfile;
 };
 
 /** Levenshtein distance (exported for tests / diagnostics). */
@@ -123,14 +143,36 @@ export function levenshtein(a: string, b: string): number {
 }
 
 /**
- * High-confidence full match after normalizeArabicText on both sides.
+ * Classic Web Speech match (desktop golden era — pre-Whisper-tuning).
+ * No extra Levenshtein gate that rejected near-matches from Chrome ASR.
  */
-export function wordsMatchStrict(expected: string, spoken: string): boolean {
+export function wordsMatchWebSpeech(
+  expected: string,
+  spoken: string
+): boolean {
+  const e = quranNormalize(expected);
+  const s = quranNormalize(spoken);
+  if (!e || !s) return false;
+  if (e === s) return true;
+  const e2 = e.replace(/ا/g, "");
+  const s2 = s.replace(/ا/g, "");
+  if (e2.length >= 3 && e2 === s2) return true;
+  if (e.length <= 2) return e === s;
+  if (!wordsMatch(e, s)) return false;
+  if (Math.abs(e.length - s.length) > Math.max(2, Math.floor(e.length * 0.25))) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Whisper-oriented match (tighter orthography + soft Levenshtein).
+ */
+export function wordsMatchWhisper(expected: string, spoken: string): boolean {
   const e = normalizeArabicText(expected);
   const s = normalizeArabicText(spoken);
   if (!e || !s) return false;
   if (e === s) return true;
-  // Drop alifs (madd) only if both collapse to same skeleton ≥ 3 chars
   const e2 = e.replace(/ا/g, "");
   const s2 = s.replace(/ا/g, "");
   if (e2.length >= 3 && e2 === s2) return true;
@@ -142,21 +184,24 @@ export function wordsMatchStrict(expected: string, spoken: string): boolean {
   const dist = levenshtein(e, s);
   const maxLen = Math.max(e.length, s.length);
   if (maxLen <= 4) return dist <= 1;
-  // Slightly more tolerant for Whisper-tiny orthography noise after normalize
   return dist / maxLen <= 0.34;
 }
 
-/** True when spoken is clearly not the expected word (committed mistake). */
+/** @deprecated Prefer wordsMatchWebSpeech / wordsMatchWhisper; kept as Whisper alias. */
+export function wordsMatchStrict(expected: string, spoken: string): boolean {
+  return wordsMatchWhisper(expected, spoken);
+}
+
+/** True when spoken is clearly not the expected word (Whisper profile). */
 export function isClearMismatch(expected: string, spoken: string): boolean {
   const e = normalizeArabicText(expected);
   const s = normalizeArabicText(spoken);
   if (!e || !s) return false;
-  if (wordsMatchStrict(e, s)) return false;
+  if (wordsMatchWhisper(e, s)) return false;
   if (isPartialWord(e, s)) return false;
   if (e.length <= 2) return s !== e && s.length >= 2;
   const dist = levenshtein(e, s);
   const maxLen = Math.max(e.length, s.length);
-  // Require clearer distance before painting red (Whisper soft typos)
   return dist / maxLen > 0.4;
 }
 
@@ -165,29 +210,37 @@ export function matchLive(
   spokenText: string,
   opts: MatchLiveOptions = {}
 ): LiveMatchResult {
+  const profile = resolveMatchProfile(opts.profile);
+  const isWebSpeech = profile === "webspeech";
   const strict = opts.strict === true;
   const streaming = !strict && opts.streaming === true;
   const interim = opts.interim === true;
 
-  // Normalize expected + spoken BEFORE any strict compare (Whisper typo tolerance)
+  const matchWord = isWebSpeech ? wordsMatchWebSpeech : wordsMatchWhisper;
+
   const flat: { text: string; norm: string; ayahNumber: number }[] = [];
   for (const a of stream) {
     for (let i = 0; i < a.displayWords.length; i++) {
+      const raw = a.normWords[i] || a.displayWords[i];
       flat.push({
         text: a.displayWords[i],
-        norm: normalizeArabicText(a.normWords[i] || a.displayWords[i]),
+        // Both profiles normalize; Whisper path is explicit for ASR typos
+        norm: isWebSpeech ? quranNormalize(raw) : normalizeArabicText(raw),
         ayahNumber: a.ayahNumber,
       });
     }
   }
 
   const expectedNorms = flat.map((f) => f.norm);
-  const normalizedSpoken = normalizeArabicText(spokenText);
-  const cleaned = cleanTranscriptForQuran(normalizedSpoken, expectedNorms);
-  let spoken = quranTokenize(normalizeArabicText(cleaned));
-  if (!spoken.length) spoken = quranTokenize(normalizedSpoken);
-  // Tokens are already normalized via quranTokenize → quranNormalize
-  spoken = spoken.map((w) => normalizeArabicText(w)).filter(Boolean);
+  const spokenRaw = isWebSpeech
+    ? spokenText
+    : normalizeArabicText(spokenText);
+  const cleaned = cleanTranscriptForQuran(spokenRaw, expectedNorms);
+  let spoken = quranTokenize(cleaned);
+  if (!spoken.length) spoken = quranTokenize(spokenRaw);
+  if (!isWebSpeech) {
+    spoken = spoken.map((w) => normalizeArabicText(w)).filter(Boolean);
+  }
 
   const total = flat.length;
   const status: LiveStatus[] = Array(total).fill("pending");
@@ -221,12 +274,10 @@ export function matchLive(
     const sWord = spoken[si];
     const exp = flat[oi].norm;
     const isLastToken = si === spoken.length - 1;
-    /** Last interim token may still be growing — never judge wrong yet */
     const softInterim = interim && isLastToken;
 
-    // Repeated same token (ASR re-emit)
     if (sWord === prevSpoken && sWord.length > 1) {
-      if (wordsMatchStrict(exp, sWord) || isPartialWord(exp, sWord)) {
+      if (matchWord(exp, sWord) || isPartialWord(exp, sWord)) {
         si++;
         continue;
       }
@@ -235,8 +286,8 @@ export function matchLive(
       continue;
     }
 
-    // 1) High-confidence match of CURRENT word only
-    if (wordsMatchStrict(exp, sWord) && !isPartialWord(exp, sWord)) {
+    // 1) Full match of CURRENT word
+    if (matchWord(exp, sWord) && !isPartialWord(exp, sWord)) {
       status[oi] = "correct";
       prevSpoken = sWord;
       oi++;
@@ -244,8 +295,7 @@ export function matchLive(
       continue;
     }
 
-    // 2) Madd / partial of CURRENT word only
-    //    Do NOT reveal the next word. Partial is non-revealed (UX: no premature).
+    // 2) Madd / partial of CURRENT word
     if (isPartialWord(exp, sWord)) {
       status[oi] = "partial";
       prevSpoken = sWord;
@@ -253,12 +303,11 @@ export function matchLive(
       continue;
     }
 
-    // 3) Merge ASR fragments for CURRENT expected word only
+    // 3) Merge fragments for CURRENT expected word
     let mergedHit = false;
     for (let take = 2; take <= 5 && si + take - 1 < spoken.length; take++) {
       const merged = spoken.slice(si, si + take).join("");
-      const lastOfMerge = si + take - 1 === spoken.length - 1;
-      if (wordsMatchStrict(exp, merged) && !isPartialWord(exp, merged)) {
+      if (matchWord(exp, merged) && !isPartialWord(exp, merged)) {
         status[oi] = "correct";
         prevSpoken = merged;
         oi++;
@@ -267,14 +316,6 @@ export function matchLive(
         break;
       }
       if (isPartialWord(exp, merged)) {
-        // If still building (ends at interim last), keep partial
-        if (interim && lastOfMerge) {
-          status[oi] = "partial";
-          prevSpoken = merged;
-          si += take;
-          mergedHit = true;
-          break;
-        }
         status[oi] = "partial";
         prevSpoken = merged;
         si += take;
@@ -284,33 +325,40 @@ export function matchLive(
     }
     if (mergedHit) continue;
 
-    // 4) STRICT path
+    // 4) STRICT path — profile decides comfort vs harshness
     if (strict) {
-      // Soft interim: don't paint red yet, don't paint "current" (no premature highlight)
-      if (softInterim) {
-        // Leave expected as pending/partial — consume nothing further
-        break;
+      if (isWebSpeech) {
+        // CLASSIC DESKTOP: soft-ignore unmatched tokens; never freeze on noise.
+        // Do NOT paint red aggressively — Web Speech interim noise is common.
+        if (softInterim) {
+          status[oi] = "current";
+          prevSpoken = sWord;
+          si++;
+          continue;
+        }
+        if (isMeaningfulSpokenToken(sWord)) {
+          extra++;
+        }
+        prevSpoken = sWord;
+        si++;
+        continue;
       }
 
+      // WHISPER profile: judge committed mismatches (mobile live path)
+      if (softInterim) {
+        break;
+      }
       if (isMeaningfulSpokenToken(sWord) && isClearMismatch(exp, sWord)) {
-        // Real mistake: reveal expected word in red and advance
         markIncorrect(oi, sWord);
         prevSpoken = sWord;
         oi++;
         si++;
         continue;
       }
-
-      // Meaningless noise token — drop without advancing Quran cursor
       if (!isMeaningfulSpokenToken(sWord)) {
         si++;
         continue;
       }
-
-      // Meaningful but not clear mismatch (borderline): still count extra, stay
-      // on expected word so user can re-say correctly without auto-red.
-      // However for non-interim committed tokens that aren't partial/match,
-      // treat as wrong to honor "don't ignore mistakes".
       if (!interim || !isLastToken) {
         markIncorrect(oi, sWord);
         prevSpoken = sWord;
@@ -318,15 +366,14 @@ export function matchLive(
         si++;
         continue;
       }
-
       break;
     }
 
-    // 5) Non-strict streaming: optional skip-ahead
+    // 5) Non-strict streaming skip-ahead
     let foundLater = -1;
     if (streaming) {
       for (let k = oi + 1; k < Math.min(total, oi + 6); k++) {
-        if (wordsMatchStrict(flat[k].norm, sWord)) {
+        if (matchWord(flat[k].norm, sWord)) {
           foundLater = k;
           break;
         }
@@ -348,7 +395,7 @@ export function matchLive(
     // 6) Extra spoken before expected
     let foundSpoken = -1;
     for (let k = si + 1; k < Math.min(spoken.length, si + 3); k++) {
-      if (wordsMatchStrict(exp, spoken[k])) {
+      if (matchWord(exp, spoken[k])) {
         foundSpoken = k;
         break;
       }
@@ -362,11 +409,15 @@ export function matchLive(
     }
 
     if (softInterim) {
-      // No premature "current" highlight of unspoken word
+      if (isWebSpeech) {
+        status[oi] = "current";
+        prevSpoken = sWord;
+        si++;
+        continue;
+      }
       break;
     }
 
-    // Soft incorrect on current only (no jump)
     markIncorrect(oi, sWord);
     prevSpoken = sWord;
     oi++;
@@ -377,21 +428,21 @@ export function matchLive(
     extra += spoken.slice(si).filter((w) => isMeaningfulSpokenToken(w)).length;
   }
 
-  // CRITICAL: do NOT set status[oi] = "current".
-  // That was the premature-reveal/highlight of word N+1 after N was spoken.
-  // Cursor is reported only via `cursor` / currentAyah for navigation.
+  // Web Speech: restore classic cursor marker. Whisper: no premature "current".
+  if (isWebSpeech && oi < total && status[oi] === "pending") {
+    status[oi] = "current";
+  }
 
   const display: LiveDisplayWord[] = flat.map((w, i) => {
     const st = status[i];
-    // Revealed ONLY after the user uttered something judged for this word
     const confirmed =
       st === "correct" || st === "missing" || st === "incorrect";
     return {
       text: w.text,
       ayahNumber: w.ayahNumber,
       globalIndex: i,
-      // Map residual "current"/"partial" to non-revealing statuses for display
-      status: st === "current" ? "pending" : st,
+      // Whisper: hide leftover "current". Web Speech: keep cursor status.
+      status: !isWebSpeech && st === "current" ? "pending" : st,
       revealed: confirmed,
       note: notes[i],
     };
@@ -409,8 +460,14 @@ export function matchLive(
 
   for (const a of stream) {
     const words = byAyah.get(a.ayahNumber) || [];
-    // Advance ayah focus when any word was judged, or when cursor sits here
-    if (words.some((w) => w.revealed)) {
+    if (
+      words.some(
+        (w) =>
+          w.revealed ||
+          (isWebSpeech &&
+            (w.status === "current" || w.status === "partial"))
+      )
+    ) {
       revealedUpToAyah = a.ayahNumber;
       currentAyah = a.ayahNumber;
     }

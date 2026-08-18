@@ -41,7 +41,9 @@ import {
   buildLiveWordStream,
   finalFeedbackAr,
   matchLive,
+  resolveMatchProfile,
   type LiveDisplayWord,
+  type MatchProfile,
 } from "@/lib/quran/live-recitation";
 import { formatArabicNumber, cn } from "@/lib/utils";
 import { saveSurahRecitationProgress } from "@/lib/quran/recitation-progress";
@@ -129,12 +131,25 @@ function DirectSessionInner() {
     [pickSurah]
   );
 
+  /** Desktop → webspeech profile (classic match). Mobile → whisper profile. */
+  const matchProfile: MatchProfile = useMemo(
+    () =>
+      resolveMatchProfile(
+        pickSpeechEngine() === "wasm-whisper" ? "whisper" : "webspeech"
+      ),
+    []
+  );
+
   useEffect(() => {
     if (!wordStream.length) return;
-    const seed = matchLive(wordStream, "", { interim: true, strict: true });
+    const seed = matchLive(wordStream, "", {
+      interim: true,
+      strict: true,
+      profile: matchProfile,
+    });
     setLiveWords(seed.display);
     setCurrentAyah(seed.currentAyah || fromAyah);
-  }, [wordStream, fromAyah]);
+  }, [wordStream, fromAyah, matchProfile]);
 
   const progressPct = useMemo(() => {
     if (!liveWords.length) return 0;
@@ -165,12 +180,13 @@ function DirectSessionInner() {
       const result = matchLive(wordStream, text, {
         interim: true,
         strict: true,
+        profile: matchProfile,
       });
       setLiveWords(result.display);
       setAccuracy(result.stats.accuracy);
       setCurrentAyah(result.currentAyah);
       setMatchCursor(result.cursor);
-      // Keep decoder bias on the words the user is about to recite
+      // Keep decoder bias on the words the user is about to recite (Whisper only)
       speechRef.current?.setExpectedPrompt(buildExpectedPrompt(result.cursor));
       // Auto-clear one-shot hint when user advances past the hinted word
       if (hintOn && result.cursor > matchCursorRef.current) {
@@ -206,7 +222,15 @@ function DirectSessionInner() {
         });
       }
     },
-    [wordStream, toAyah, surahNumber, fromAyah, hintOn, buildExpectedPrompt]
+    [
+      wordStream,
+      toAyah,
+      surahNumber,
+      fromAyah,
+      hintOn,
+      buildExpectedPrompt,
+      matchProfile,
+    ]
   );
 
   const killSpeech = useCallback(() => {
@@ -484,6 +508,7 @@ function DirectSessionInner() {
     const result = matchLive(wordStream, finalText, {
       interim: false,
       strict: true,
+      profile: matchProfile,
     });
     setLiveWords(result.display);
     setAccuracy(result.stats.accuracy);

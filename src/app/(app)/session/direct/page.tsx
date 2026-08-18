@@ -762,8 +762,12 @@ function DirectSessionInner() {
       return;
     }
     if (phase === "paused") {
-      // Mobile batch: re-record. Desktop: continue live listening.
-      void startListening(useMobileBatch ? false : true);
+      // Mobile batch: re-record. Desktop: resume live listening.
+      if (useMobileBatch) {
+        void startListening(false);
+      } else {
+        void continueListening();
+      }
       return;
     }
     if (phase === "done") {

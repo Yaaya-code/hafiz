@@ -2,10 +2,9 @@
  * Free forever STT (Zero cloud cost).
  *
  * Desktop live: Web Speech (elsewhere) or optional wasm live ticks.
- * Mobile Batch (design contract):
- * - Open recording (no user-visible 90s cutoff)
- * - Silent background chunking ~30s in Worker
- * - matchLive / colors ONLY after user presses «تم»
+ * Mobile Pure Batch (reverted from background chunking):
+ * - Open mic, append to ONE contiguous buffer — nothing to Worker while recording
+ * - On «تم»: analyze the full buffer (offline). matchLive only after that.
  */
 
 import type { SpeechHandlers } from "./speech-recognition";
@@ -20,19 +19,16 @@ const MIN_INFER_GAP_MS = 1800;
 /** Keep ~12s of mic audio for live ticks */
 const MAX_BUFFER_SEC = 12;
 /**
- * Mobile Batch + Background Chunking (design contract):
- * - No user-visible 90s cutoff — long tilawah is first-class.
- * - Every ~30s peel oldest PCM and infer silently in the Worker.
- * - Never call matchLive / UI transcript handlers during recording.
- * - Soft buffer cap only protects RAM if Worker falls behind.
+ * Pure Batch: no inference during recording.
+ * Extreme RAM safety only (~20 min) — drop oldest samples, never stop the mic for UX.
+ * Whisper native window ~30s: after «تم» we may split the COMPLETE contiguous
+ * buffer offline (not mid-recording peels) so long tilawah is not truncated.
  */
-const BATCH_BG_CHUNK_SEC = 30;
-/** How often we check whether a full silent chunk is ready */
-const BATCH_CHUNK_CHECK_MS = 1500;
-/** If unprocessed capture grows past this while a chunk is in-flight, keep waiting (no UI match). */
-const BATCH_SOFT_PENDING_SEC = 90;
-/** Extreme safety only (~20 min @ capture rate) — drop oldest unprocessed audio, never stop mic for UX. */
 const BATCH_HARD_SAFETY_SEC = 20 * 60;
+/** Offline-only slice length when finishing a long contiguous recording */
+const BATCH_OFFLINE_SLICE_SEC = 30;
+/** Overlap between offline slices to reduce mid-word cuts at boundaries */
+const BATCH_OFFLINE_OVERLAP_SEC = 1;
 const MIC_TIMEOUT_MS = 25_000;
 const AUDIO_RESUME_MS = 8_000;
 const PIPELINE_TIMEOUT_MS = 180_000;
@@ -363,14 +359,8 @@ export class WasmWhisperSpeechSession {
    * Overwritten — never queued.
    */
   private pendingLatest: Float32Array | null = null;
-  /** Mobile Batch MVP: open recording + silent background chunking */
+  /** Mobile Pure Batch: record only — Worker runs after «تم» */
   private batchMode = false;
-  /** Assembled Whisper text from completed background chunks (not shown to UI yet) */
-  private batchParts: string[] = [];
-  private batchChunkTimer: ReturnType<typeof setInterval> | null = null;
-  /** True while a silent background chunk is inside the Worker */
-  private batchChunkBusy = false;
-  private batchChunkEpoch = 0;
 
   /** Update expected Quran context while listening (call from UI as cursor moves). */
   setExpectedPrompt(text: string) {
@@ -432,9 +422,6 @@ export class WasmWhisperSpeechSession {
       this.initialPrompt = opts.expectedPrompt.trim().slice(0, 220);
     }
     this.batchMode = opts?.mode === "batch";
-    this.batchParts = [];
-    this.batchChunkBusy = false;
-    this.batchChunkEpoch += 1;
     this.wantContinue = true;
     this.running = false;
 
@@ -542,7 +529,7 @@ export class WasmWhisperSpeechSession {
       this.sampleCount += copy.length;
 
       if (this.batchMode) {
-        // Extreme RAM safety only — never a user-facing 90s stop.
+        // Pure Batch: grow one contiguous buffer. No Worker calls here.
         const hardMax = Math.floor(BATCH_HARD_SAFETY_SEC * this.inputRate);
         while (this.sampleCount > hardMax && this.samples.length > 1) {
           const dropped = this.samples.shift();
@@ -572,15 +559,10 @@ export class WasmWhisperSpeechSession {
 
     if (this.tickTimer) clearInterval(this.tickTimer);
     this.tickTimer = null;
-    if (this.batchChunkTimer) clearInterval(this.batchChunkTimer);
-    this.batchChunkTimer = null;
 
-    if (this.batchMode) {
-      // Silent background chunking — NO transcript/matchLive callbacks here.
-      this.batchChunkTimer = setInterval(() => {
-        void this.pumpBackgroundBatchChunk(false);
-      }, BATCH_CHUNK_CHECK_MS);
-    } else {
+    // Pure Batch: NO timers / NO Worker during recording.
+    // Live path only: periodic inference ticks.
+    if (!this.batchMode) {
       this.tickTimer = setInterval(() => {
         void this.runInferenceTick();
       }, 400);
@@ -590,95 +572,59 @@ export class WasmWhisperSpeechSession {
     return { ok: true };
   }
 
-  /** Peel oldest N capture-rate samples from the ring (FIFO). */
-  private peelFrontCapture(sampleCount: number): Float32Array {
-    const n = Math.max(0, Math.min(sampleCount, this.sampleCount));
-    const out = new Float32Array(n);
-    let filled = 0;
-    while (filled < n && this.samples.length) {
-      const chunk = this.samples[0];
-      const need = n - filled;
-      if (chunk.length <= need) {
-        out.set(chunk, filled);
-        filled += chunk.length;
-        this.sampleCount -= chunk.length;
-        this.samples.shift();
-      } else {
-        out.set(chunk.subarray(0, need), filled);
-        this.samples[0] = chunk.subarray(need);
-        this.sampleCount -= need;
-        filled = n;
-      }
+  /** Flatten the contiguous capture ring → one Float32Array at capture rate. */
+  private collectAllCaptureRate(): Float32Array | null {
+    if (!this.sampleCount) return null;
+    const out = new Float32Array(this.sampleCount);
+    let offset = 0;
+    for (const chunk of this.samples) {
+      out.set(chunk, offset);
+      offset += chunk.length;
     }
     return out;
   }
 
   /**
-   * Background chunk pump (Batch contract):
-   * - If Worker busy → do nothing (single in-flight chunk).
-   * - If ≥ ~30s pending → peel oldest 30s, infer silently, append to batchParts.
-   * - Never emits onInterim/onFinal (UI must not matchLive during recording).
+   * Offline analysis of a COMPLETE contiguous 16 kHz buffer after recording ends.
+   * Not mid-recording peelFront — the full tilawah is already captured first.
+   * Whisper ~30s window: long clips are sliced offline with small overlap.
    */
-  private async pumpBackgroundBatchChunk(force: boolean): Promise<void> {
-    if (!this.batchMode || this.destroyed) return;
-    if (this.batchChunkBusy) return;
+  private async transcribeContiguousPcm16(
+    pcm16: Float32Array
+  ): Promise<string> {
+    const slice = Math.floor(BATCH_OFFLINE_SLICE_SEC * TARGET_SR);
+    const overlap = Math.floor(BATCH_OFFLINE_OVERLAP_SEC * TARGET_SR);
+    const step = Math.max(1, slice - overlap);
 
-    const chunkSamples = Math.floor(BATCH_BG_CHUNK_SEC * this.inputRate);
-    const minSamples = Math.floor(this.inputRate * 0.45);
-
-    if (!force) {
-      if (this.sampleCount < chunkSamples) return;
-      // If Worker is slow, don't pile multiple jobs — wait until free (handled by batchChunkBusy).
-      const softMax = Math.floor(BATCH_SOFT_PENDING_SEC * this.inputRate);
-      if (this.sampleCount > softMax && this.sampleCount < chunkSamples) {
-        return;
-      }
-    } else if (this.sampleCount < minSamples) {
-      return;
+    if (pcm16.length <= slice) {
+      if (rmsOf(pcm16) < RMS_MIN * 0.45) return "";
+      return (await workerInfer(new Float32Array(pcm16), this.initialPrompt)) || "";
     }
 
-    const take = force
-      ? this.sampleCount
-      : Math.min(chunkSamples, this.sampleCount);
-    if (take < minSamples) return;
-
-    const capture = this.peelFrontCapture(take);
-    const epoch = this.batchChunkEpoch;
-    this.batchChunkBusy = true;
-    try {
-      const pcm16 = downsampleTo16k(capture, this.inputRate);
-      if (rmsOf(pcm16) < RMS_MIN * 0.45) {
-        return; // near-silence chunk — skip without failing the session
+    let text = "";
+    for (let i = 0; i < pcm16.length; i += step) {
+      const end = Math.min(i + slice, pcm16.length);
+      const part = pcm16.subarray(i, end);
+      if (part.length < TARGET_SR * 0.4) break;
+      if (rmsOf(part) < RMS_MIN * 0.45) {
+        if (end >= pcm16.length) break;
+        continue;
       }
-      const text = await workerInfer(pcm16, this.initialPrompt);
-      if (epoch !== this.batchChunkEpoch || this.destroyed) return;
-      if (text) {
-        this.batchParts.push(text);
-        // Intentionally NO handlers.onFinal/onInterim here (no UI freeze / no live colors).
-      }
-    } catch {
-      // Soft-fail one chunk; keep recording. Errors surface only if finish fails entirely.
-    } finally {
-      this.batchChunkBusy = false;
+      const copy = new Float32Array(part.length);
+      copy.set(part);
+      const t = await workerInfer(copy, this.initialPrompt);
+      if (t) text = mergeTranscript(text, t);
+      if (end >= pcm16.length) break;
     }
-  }
-
-  private async waitBatchChunkIdle(timeoutMs = 120_000): Promise<void> {
-    const start = Date.now();
-    while (this.batchChunkBusy) {
-      if (Date.now() - start > timeoutMs) {
-        throw new Error("انتهت مهلة انتظار تحليل مقطع خلفي.");
-      }
-      await new Promise((r) => setTimeout(r, 40));
-    }
+    return text.replace(/\s+/g, " ").trim();
   }
 
   /**
-   * User pressed «تم التسجيل»:
-   * 1) Stop mic / chunk timer
-   * 2) Wait for in-flight silent chunk
-   * 3) Drain remaining audio as tail chunk(s)
-   * 4) Assemble final transcript once for UI matchLive
+   * Pure Batch «تم التسجيل»:
+   * 1) Stop mic — nothing was sent to Worker during recording
+   * 2) Take the ONE contiguous buffer
+   * 3) Offline-transcribe (single pass or offline slices of the complete buffer)
+   * 4) Return full text — page runs matchLive once
    */
   async finishBatchTranscription(): Promise<{
     ok: boolean;
@@ -689,10 +635,6 @@ export class WasmWhisperSpeechSession {
       return { ok: false, error: "الجلسة ليست في وضع Batch." };
     }
     this.wantContinue = false;
-    if (this.batchChunkTimer) {
-      clearInterval(this.batchChunkTimer);
-      this.batchChunkTimer = null;
-    }
     if (this.tickTimer) {
       clearInterval(this.tickTimer);
       this.tickTimer = null;
@@ -700,25 +642,23 @@ export class WasmWhisperSpeechSession {
 
     try {
       await ensureWorkerReady();
-      // Release mic ASAP — analysis continues on already-captured + in-flight work
+      const raw = this.collectAllCaptureRate();
+      this.samples = [];
+      this.sampleCount = 0;
       this.cleanupAudioTracksOnly();
 
-      await this.waitBatchChunkIdle();
-
-      // Drain whatever is left (may be several 30s peels if user stopped mid-backlog)
-      while (this.sampleCount >= Math.floor(this.inputRate * 0.45)) {
-        const before = this.sampleCount;
-        await this.pumpBackgroundBatchChunk(true);
-        if (this.sampleCount >= before) {
-          // Safety: avoid infinite loop if peel failed
-          this.samples = [];
-          this.sampleCount = 0;
-          break;
-        }
-        await this.waitBatchChunkIdle();
+      if (!raw || raw.length < this.inputRate * 0.4) {
+        this.running = false;
+        this.handlers.onListeningChange?.(false);
+        return {
+          ok: false,
+          error: "التسجيل قصير جداً. أعد التسجيل واقرأ بوضوح.",
+        };
       }
 
-      const text = this.batchParts.join(" ").replace(/\s+/g, " ").trim();
+      const pcm16 = downsampleTo16k(raw, this.inputRate);
+      const text = await this.transcribeContiguousPcm16(pcm16);
+
       this.finalBuffer = text;
       this.lastEmitted = text;
       this.running = false;
@@ -731,7 +671,6 @@ export class WasmWhisperSpeechSession {
         };
       }
 
-      // Do NOT call onInterim/onFinal here — the page runs matchLive once on `text`.
       return { ok: true, text };
     } catch (e) {
       this.running = false;
@@ -918,12 +857,6 @@ export class WasmWhisperSpeechSession {
       clearInterval(this.tickTimer);
       this.tickTimer = null;
     }
-    if (this.batchChunkTimer) {
-      clearInterval(this.batchChunkTimer);
-      this.batchChunkTimer = null;
-    }
-    this.batchChunkEpoch += 1;
-    this.batchChunkBusy = false;
     try {
       this.processor?.disconnect();
       this.source?.disconnect();

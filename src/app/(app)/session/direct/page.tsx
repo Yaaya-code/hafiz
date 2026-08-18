@@ -471,7 +471,7 @@ function DirectSessionInner() {
       if (batch) {
         setPhase("recording");
         setStatusMsg(
-          "المايك مفتوح — اقرأ بحرية (حتى المقاطع الطويلة). يمكنك الضغط على «تم التسجيل» متى انتهيت. التحضير الصوتي يتم في الخلفية بصمت بدون ألوان أثناء القراءة."
+          "المايك مفتوح — اقرأ بحرية ثم اضغط «تم التسجيل». لا تحليل أثناء القراءة؛ النتيجة تظهر بعد انتهاء التحليل دفعة واحدة."
         );
       } else {
         setPhase("listening");
@@ -1017,7 +1017,7 @@ function DirectSessionInner() {
           {engineLabel && phase === "idle" && (
             <p className="text-center text-[10px] text-muted-foreground">
               {useMobileBatch
-                ? "على الموبايل: تسجيل مفتوح + تحليل صامت في الخلفية كل ~30ث. النتائج والألوان تظهر فقط بعد «تم التسجيل»."
+                ? "على الموبايل: سجّل ثم «تم» — التحليل دفعة واحدة بعد التسجيل (بدون تقطيع أثناء القراءة)."
                 : isMobileSpeechEnvironment()
                   ? "على الموبايل: محرك Whisper مجاني داخل المتصفح."
                   : engineLabel}

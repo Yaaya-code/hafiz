@@ -328,22 +328,21 @@ export function matchLive(
     // 4) STRICT path — profile decides comfort vs harshness
     if (strict) {
       if (isWebSpeech) {
-        // Desktop balance: ignore noise / growing interim — but punish clear wrongs.
-        // Never wait forever for the exact word (that killed the "test" UX).
+        /**
+         * GOLDEN-ERA DESKTOP (reverted): 100% soft-ignore.
+         * Never markIncorrect / never oi++ on mismatches — Yahya prefers
+         * ignored noise over false-red + cursor racing ahead of the user.
+         */
         if (softInterim) {
           status[oi] = "current";
           prevSpoken = sWord;
           si++;
           continue;
         }
-        if (!isMeaningfulSpokenToken(sWord)) {
-          si++;
-          continue;
+        if (isMeaningfulSpokenToken(sWord)) {
+          extra++;
         }
-        // Meaningful token that is not a match/partial → count as incorrect
-        markIncorrect(oi, sWord);
         prevSpoken = sWord;
-        oi++;
         si++;
         continue;
       }

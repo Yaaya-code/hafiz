@@ -63,19 +63,18 @@ describe("matchLive whisper — no premature reveal", () => {
   });
 });
 
-describe("matchLive webspeech profile — balance noise vs real errors", () => {
-  it("marks clear wrong words red (does not wait forever)", () => {
+describe("matchLive webspeech profile — golden soft-ignore", () => {
+  it("never paints red; waits for correct word (no cursor race)", () => {
     const r = matchLive(fatihaStart, "كتاب", {
       interim: false,
       strict: true,
       profile: "webspeech",
     });
-    expect(r.display[0].status).toBe("incorrect");
-    expect(r.display[0].revealed).toBe(true);
-    expect(r.cursor).toBeGreaterThanOrEqual(1);
+    expect(r.display[0].status).not.toBe("incorrect");
+    expect(r.cursor).toBe(0);
   });
 
-  it("still soft-ignores tiny noise tokens", () => {
+  it("soft-ignores tiny noise tokens", () => {
     const r = matchLive(fatihaStart, ".", {
       interim: false,
       strict: true,

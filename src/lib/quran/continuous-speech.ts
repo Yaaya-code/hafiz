@@ -29,14 +29,28 @@ export type ContinuousStartOpts = {
   forceEngine?: ContinuousEngine;
 };
 
+/**
+ * Engine split (critical):
+ * - Desktop (Win/Mac/Linux browsers): Web Speech API only when available —
+ *   never force Whisper WASM (it wrecks laptop UX with heavy model load).
+ * - Mobile (Android/iOS): Whisper WASM for continuous mic without beep loop.
+ */
 export function pickSpeechEngine(): ContinuousEngine {
   if (typeof window === "undefined") return "webspeech";
-  // Mobile: Web Speech is broken for continuous (beep / silence cut). Use free WASM.
-  if (isMobileSpeechEnvironment() && isWasmSpeechSupported()) {
-    return "wasm-whisper";
+
+  const mobile = isMobileSpeechEnvironment();
+
+  if (!mobile) {
+    // Desktop path — keep it light
+    if (isSpeechRecognitionSupported()) return "webspeech";
+    // Rare desktop without Web Speech: wasm last resort only
+    if (isWasmSpeechSupported()) return "wasm-whisper";
+    return "webspeech";
   }
-  if (isSpeechRecognitionSupported()) return "webspeech";
+
+  // Mobile path — continuous free STT without Android chime restarts
   if (isWasmSpeechSupported()) return "wasm-whisper";
+  if (isSpeechRecognitionSupported()) return "webspeech";
   return "webspeech";
 }
 

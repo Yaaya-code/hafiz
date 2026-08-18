@@ -344,6 +344,11 @@ export class WasmWhisperSpeechSession {
   /** Quran words expected next — biases Whisper decoder */
   private initialPrompt = "";
   private lastErrorAt = 0;
+  /**
+   * Latest PCM captured while Worker was busy. Overwritten (never queued) so
+   * we never build an inference backlog that lags the user by 10+ seconds.
+   */
+  private pendingLatest: Float32Array | null = null;
 
   /** Update expected Quran context while listening (call from UI as cursor moves). */
   setExpectedPrompt(text: string) {
@@ -539,33 +544,67 @@ export class WasmWhisperSpeechSession {
   }
 
   private async runInferenceTick() {
-    if (!this.wantContinue || this.destroyed || this.inferring) return;
+    if (!this.wantContinue || this.destroyed) return;
     if (!workerReady) return;
 
-    const now = Date.now();
-    if (now - this.lastInferAt < MIN_INFER_GAP_MS) return;
+    /**
+     * Queue policy (anti-backlog):
+     * If Worker is busy, DO NOT enqueue old windows. Overwrite pendingLatest
+     * with the newest mic window only. Prefer losing a syllable over 10s lag.
+     */
+    if (this.inferring) {
+      const latest = this.collectWindow();
+      if (latest && rmsOf(latest) >= RMS_MIN) {
+        this.pendingLatest = latest; // drop any previously pending window
+      }
+      return;
+    }
 
-    const audio = this.collectWindow();
+    const now = Date.now();
+    if (now - this.lastInferAt < MIN_INFER_GAP_MS && !this.pendingLatest) {
+      return;
+    }
+
+    // Prefer the newest window saved while busy; else sample now
+    let audio = this.pendingLatest;
+    this.pendingLatest = null;
+    if (!audio) {
+      audio = this.collectWindow();
+    }
     if (!audio || audio.length < TARGET_SR * 0.5) return;
 
     const rms = rmsOf(audio);
     if (rms < RMS_MIN) return;
 
+    await this.runOneInfer(audio);
+  }
+
+  private async runOneInfer(audio: Float32Array) {
+    if (!this.wantContinue || this.destroyed || this.inferring) return;
+
     this.inferring = true;
-    this.lastInferAt = now;
+    this.lastInferAt = Date.now();
+    let followUp: Float32Array | null = null;
     try {
-      // Copy PCM for worker (transferable buffer — main keeps ring untouched)
       const pcm = new Float32Array(audio.length);
       pcm.set(audio);
 
       const text = await workerInfer(pcm, this.initialPrompt);
       if (!this.wantContinue || this.destroyed) return;
+
+      // Newer mic window arrived while Worker was busy → drop THIS stale result
+      // and schedule only the latest window (no backlog of old windows).
+      if (this.pendingLatest) {
+        followUp = this.pendingLatest;
+        this.pendingLatest = null;
+        return;
+      }
+
       if (!text) return;
 
       this.finalBuffer = mergeTranscript(this.finalBuffer, text);
       if (this.finalBuffer !== this.lastEmitted) {
         this.lastEmitted = this.finalBuffer;
-        // Defer React updates to next macrotask so we never nest heavy work
         const snap = this.finalBuffer;
         queueMicrotask(() => {
           if (!this.wantContinue || this.destroyed) return;
@@ -575,13 +614,19 @@ export class WasmWhisperSpeechSession {
       }
     } catch (e) {
       const msg = formatErr(e);
-      // Throttle error spam (max 1 / 8s)
       if (Date.now() - this.lastErrorAt > 8000) {
         this.lastErrorAt = Date.now();
         this.handlers.onError?.("خطأ أثناء التعرّف: " + msg);
       }
     } finally {
       this.inferring = false;
+      if (!followUp && this.pendingLatest) {
+        followUp = this.pendingLatest;
+        this.pendingLatest = null;
+      }
+      if (followUp && this.wantContinue && !this.destroyed) {
+        void this.runOneInfer(followUp);
+      }
     }
   }
 
@@ -659,6 +704,7 @@ export class WasmWhisperSpeechSession {
     this.samples = [];
     this.sampleCount = 0;
     this.inferring = false;
+    this.pendingLatest = null;
   }
 
   isRunning() {

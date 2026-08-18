@@ -65,17 +65,36 @@ function getSpeechRecognitionCtor():
   return w.SpeechRecognition || w.webkitSpeechRecognition || null;
 }
 
+/**
+ * True only for real phones/tablets that need Whisper WASM continuous STT.
+ * IMPORTANT: do NOT treat Windows/macOS touch laptops as mobile — that forced
+ * desktop Chrome onto heavy Whisper and destroyed Web Speech performance.
+ */
 export function isMobileSpeechEnvironment(): boolean {
   if (typeof navigator === "undefined") return false;
   const ua = navigator.userAgent || "";
-  return (
-    /Android|iPhone|iPad|iPod|Mobile|webOS|BlackBerry|IEMobile|Opera Mini/i.test(
+
+  // Explicit mobile / tablet UA
+  if (
+    /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini|Mobile Safari/i.test(
       ua
-    ) ||
-    (typeof window !== "undefined" &&
-      "ontouchstart" in window &&
-      (navigator.maxTouchPoints || 0) > 1)
-  );
+    )
+  ) {
+    return true;
+  }
+
+  // iPadOS 13+ may report as Macintosh but is a tablet (touch, no fine pointer)
+  if (
+    typeof window !== "undefined" &&
+    /Macintosh/i.test(ua) &&
+    (navigator.maxTouchPoints || 0) > 1 &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(pointer: coarse)").matches
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 export function getSpeechCapability(): SpeechCapability {

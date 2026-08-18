@@ -17,6 +17,16 @@ import {
   wordsMatch,
 } from "./quran-phonetic";
 
+/**
+ * ASR-tolerant Arabic normalization for Whisper-tiny typos before matching.
+ * Strips tashkeel, unifies hamza/alif, ة→ه, ى→ي.
+ * Applied to BOTH expected ayah text and model transcript.
+ */
+export function normalizeArabicText(text: string): string {
+  // Delegate to shared Quran normalizer (same rules, single source of truth)
+  return quranNormalize(text || "");
+}
+
 export type LiveAyahWords = {
   surahNumber: number;
   ayahNumber: number;
@@ -70,7 +80,7 @@ export function buildLiveWordStream(
       surahNumber: a.surahNumber,
       ayahNumber: a.ayahNumber,
       displayWords,
-      normWords: displayWords.map(quranNormalize),
+      normWords: displayWords.map(normalizeArabicText),
     };
   });
 }
@@ -113,43 +123,41 @@ export function levenshtein(a: string, b: string): number {
 }
 
 /**
- * High-confidence full match (stricter than wordsMatch for final commit).
+ * High-confidence full match after normalizeArabicText on both sides.
  */
 export function wordsMatchStrict(expected: string, spoken: string): boolean {
-  const e = quranNormalize(expected);
-  const s = quranNormalize(spoken);
+  const e = normalizeArabicText(expected);
+  const s = normalizeArabicText(spoken);
   if (!e || !s) return false;
   if (e === s) return true;
   // Drop alifs (madd) only if both collapse to same skeleton ≥ 3 chars
   const e2 = e.replace(/ا/g, "");
   const s2 = s.replace(/ا/g, "");
   if (e2.length >= 3 && e2 === s2) return true;
-  // Very tight fuzzy via wordsMatch + length ratio guard
   if (e.length <= 2) return e === s;
   if (!wordsMatch(e, s)) return false;
-  if (Math.abs(e.length - s.length) > Math.max(2, Math.floor(e.length * 0.25))) {
+  if (Math.abs(e.length - s.length) > Math.max(2, Math.floor(e.length * 0.28))) {
     return false;
   }
-  // Extra Levenshtein gate so loose skeleton matches don't auto-advance
   const dist = levenshtein(e, s);
   const maxLen = Math.max(e.length, s.length);
   if (maxLen <= 4) return dist <= 1;
-  return dist / maxLen <= 0.3;
+  // Slightly more tolerant for Whisper-tiny orthography noise after normalize
+  return dist / maxLen <= 0.34;
 }
 
 /** True when spoken is clearly not the expected word (committed mistake). */
 export function isClearMismatch(expected: string, spoken: string): boolean {
-  const e = quranNormalize(expected);
-  const s = quranNormalize(spoken);
+  const e = normalizeArabicText(expected);
+  const s = normalizeArabicText(spoken);
   if (!e || !s) return false;
   if (wordsMatchStrict(e, s)) return false;
   if (isPartialWord(e, s)) return false;
-  // Very short tokens: only exact equality is a match; else mismatch if meaningful
   if (e.length <= 2) return s !== e && s.length >= 2;
   const dist = levenshtein(e, s);
   const maxLen = Math.max(e.length, s.length);
-  // Far enough that this is not "almost" the word
-  return dist / maxLen > 0.35;
+  // Require clearer distance before painting red (Whisper soft typos)
+  return dist / maxLen > 0.4;
 }
 
 export function matchLive(
@@ -161,21 +169,25 @@ export function matchLive(
   const streaming = !strict && opts.streaming === true;
   const interim = opts.interim === true;
 
+  // Normalize expected + spoken BEFORE any strict compare (Whisper typo tolerance)
   const flat: { text: string; norm: string; ayahNumber: number }[] = [];
   for (const a of stream) {
     for (let i = 0; i < a.displayWords.length; i++) {
       flat.push({
         text: a.displayWords[i],
-        norm: a.normWords[i],
+        norm: normalizeArabicText(a.normWords[i] || a.displayWords[i]),
         ayahNumber: a.ayahNumber,
       });
     }
   }
 
   const expectedNorms = flat.map((f) => f.norm);
-  const cleaned = cleanTranscriptForQuran(spokenText, expectedNorms);
-  let spoken = quranTokenize(cleaned);
-  if (!spoken.length) spoken = quranTokenize(spokenText);
+  const normalizedSpoken = normalizeArabicText(spokenText);
+  const cleaned = cleanTranscriptForQuran(normalizedSpoken, expectedNorms);
+  let spoken = quranTokenize(normalizeArabicText(cleaned));
+  if (!spoken.length) spoken = quranTokenize(normalizedSpoken);
+  // Tokens are already normalized via quranTokenize → quranNormalize
+  spoken = spoken.map((w) => normalizeArabicText(w)).filter(Boolean);
 
   const total = flat.length;
   const status: LiveStatus[] = Array(total).fill("pending");

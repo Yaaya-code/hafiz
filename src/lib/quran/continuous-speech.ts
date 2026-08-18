@@ -1,58 +1,34 @@
 /**
- * Unified continuous speech facade:
- * - Desktop: Web Speech API (free, fast)
- * - Mobile: in-browser Whisper WASM (free forever, no beep loop, no paid cloud)
+ * Unified continuous speech facade — Web Speech API only.
+ *
+ * Product decision (2026-08): Whisper WASM removed from recitation.
+ * Accuracy of Web Speech for Quran >> tiny Whisper hallucinations.
+ * Android mic chime / silence cuts will be handled later via UX resume,
+ * not by sacrificing recognition quality.
  */
 
 import {
   ArabicSpeechSession,
-  isMobileSpeechEnvironment,
   isSpeechRecognitionSupported,
   type SpeechHandlers,
 } from "./speech-recognition";
-import {
-  WasmWhisperSpeechSession,
-  isWasmSpeechSupported,
-  preloadWhisperModel,
-  getWhisperLoadProgress,
-} from "./wasm-whisper-session";
 
-export type ContinuousEngine = "webspeech" | "wasm-whisper";
+export type ContinuousEngine = "webspeech";
 
 export type ContinuousStartOpts = {
   preserveBuffer?: boolean;
   onModelProgress?: (pct: number, status: string) => void;
   onPhase?: (phase: "mic" | "model" | "ready") => void;
-  /** Expected upcoming Quran words — biases local Whisper decoder */
   expectedPrompt?: string;
-  /** wasm only: live ticks vs mobile batch record-then-analyze */
   mode?: "live" | "batch";
-  /** Force engine (tests) */
   forceEngine?: ContinuousEngine;
 };
 
 /**
- * Engine split (critical):
- * - Desktop (Win/Mac/Linux browsers): Web Speech API only when available —
- *   never force Whisper WASM (it wrecks laptop UX with heavy model load).
- * - Mobile (Android/iOS): Whisper WASM for continuous mic without beep loop.
+ * Always Web Speech when available (desktop + mobile).
+ * Whisper/WASM path intentionally retired from product routing.
  */
 export function pickSpeechEngine(): ContinuousEngine {
-  if (typeof window === "undefined") return "webspeech";
-
-  const mobile = isMobileSpeechEnvironment();
-
-  if (!mobile) {
-    // Desktop path — keep it light
-    if (isSpeechRecognitionSupported()) return "webspeech";
-    // Rare desktop without Web Speech: wasm last resort only
-    if (isWasmSpeechSupported()) return "wasm-whisper";
-    return "webspeech";
-  }
-
-  // Mobile path — continuous free STT without Android chime restarts
-  if (isWasmSpeechSupported()) return "wasm-whisper";
-  if (isSpeechRecognitionSupported()) return "webspeech";
   return "webspeech";
 }
 
@@ -62,7 +38,6 @@ export function pickSpeechEngine(): ContinuousEngine {
 export class ContinuousArabicSpeech {
   private engine: ContinuousEngine = "webspeech";
   private web: ArabicSpeechSession | null = null;
-  private wasm: WasmWhisperSpeechSession | null = null;
   private handlers: SpeechHandlers = {};
 
   getEngine() {
@@ -74,42 +49,28 @@ export class ContinuousArabicSpeech {
     opts?: ContinuousStartOpts
   ): Promise<{ ok: boolean; error?: string; engine: ContinuousEngine }> {
     this.handlers = handlers;
-    this.engine = opts?.forceEngine || pickSpeechEngine();
+    this.engine = "webspeech";
 
-    if (this.engine === "wasm-whisper") {
-      this.wasm = this.wasm || new WasmWhisperSpeechSession();
-      try {
-        const r = await this.wasm.start(handlers, {
-          preserveBuffer: opts?.preserveBuffer,
-          onModelProgress: opts?.onModelProgress,
-          onPhase: opts?.onPhase,
-          expectedPrompt: opts?.expectedPrompt,
-          mode: opts?.mode,
-        });
-        return { ...r, engine: this.engine };
-      } catch (e) {
-        return {
-          ok: false,
-          error: e instanceof Error ? e.message : String(e),
-          engine: this.engine,
-        };
-      }
+    if (!isSpeechRecognitionSupported()) {
+      return {
+        ok: false,
+        error:
+          "التعرّف على الصوت (Web Speech) غير مدعوم على هذا المتصفح. جرّب Chrome.",
+        engine: this.engine,
+      };
     }
 
-    // Desktop Web Speech — continuousAutoResume + optional mic lock
+    opts?.onPhase?.("mic");
     this.web = this.web || new ArabicSpeechSession();
-    // Prefer mic lock on desktop continuous as well (no harm)
     const r = await this.web.startWithMicLock(handlers, {
       continuousAutoResume: true,
       preserveBuffer: opts?.preserveBuffer,
     });
+    if (r.ok) opts?.onPhase?.("ready");
     return { ...r, engine: this.engine };
   }
 
   async resume(): Promise<{ ok: boolean; error?: string }> {
-    if (this.engine === "wasm-whisper" && this.wasm) {
-      return this.wasm.resume(this.handlers);
-    }
     if (this.web) {
       return this.web.startWithMicLock(this.handlers, {
         continuousAutoResume: true,
@@ -119,67 +80,62 @@ export class ContinuousArabicSpeech {
     return this.start(this.handlers, { preserveBuffer: true });
   }
 
-  /** User pause — keep buffer */
   pause(): string {
-    if (this.engine === "wasm-whisper" && this.wasm) {
-      return this.wasm.pauseRecognition();
-    }
     return this.web?.pauseRecognition() || this.getTranscript();
   }
 
   stop(): string {
-    if (this.engine === "wasm-whisper" && this.wasm) {
-      return this.wasm.stop();
-    }
     return this.web?.stop() || "";
   }
 
   dispose() {
-    this.wasm?.dispose();
     this.web?.dispose();
-    this.wasm = null;
     this.web = null;
   }
 
   getTranscript(): string {
-    if (this.engine === "wasm-whisper") {
-      return this.wasm?.getTranscript() || "";
-    }
     return this.web?.getTranscript() || "";
   }
 
   isRunning(): boolean {
-    if (this.engine === "wasm-whisper") {
-      return this.wasm?.isRunning() || false;
-    }
     return this.web?.isRunning() || false;
   }
 
-  /** Keep Whisper initial_prompt aligned with match cursor */
   setExpectedPrompt(text: string) {
-    this.wasm?.setExpectedPrompt(text);
+    void text;
+    // No-op: Web Speech path does not use Whisper prompts
   }
 
   isBatchMode() {
-    return this.wasm?.isBatchMode() || false;
+    return false;
   }
 
-  /** Mobile Batch MVP: stop recording and run one (chunked) offline transcription */
   async finishBatchTranscription(): Promise<{
     ok: boolean;
     text?: string;
     error?: string;
   }> {
-    if (!this.wasm || !this.wasm.isBatchMode()) {
-      return { ok: false, error: "وضع Batch غير نشط." };
-    }
-    return this.wasm.finishBatchTranscription();
+    return {
+      ok: false,
+      error: "وضع Batch/Whisper مُعطّل — التسميع عبر Web Speech فقط.",
+    };
   }
 }
 
-export {
-  preloadWhisperModel,
-  getWhisperLoadProgress,
-  isWasmSpeechSupported,
-  pickSpeechEngine as detectSpeechEngine,
-};
+export { pickSpeechEngine as detectSpeechEngine };
+
+/** @deprecated Whisper preload retired — no-op for old imports */
+export async function preloadWhisperModel(
+  onProgress?: (pct: number, status: string) => void
+): Promise<void> {
+  void onProgress;
+}
+
+export function getWhisperLoadProgress(): number {
+  return 0;
+}
+
+/** @deprecated Always false — Whisper product path removed */
+export function isWasmSpeechSupported(): boolean {
+  return false;
+}

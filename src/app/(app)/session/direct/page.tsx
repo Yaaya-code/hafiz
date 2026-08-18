@@ -28,20 +28,15 @@ import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { BackButton } from "@/components/layout/back-button";
 import { SURAHS, getSurah, getSurahAyahs } from "@/lib/quran";
-import {
-  ContinuousArabicSpeech,
-  pickSpeechEngine,
-} from "@/lib/quran/continuous-speech";
+import { ContinuousArabicSpeech } from "@/lib/quran/continuous-speech";
 import {
   isSpeechRecognitionSupported,
   isMobileSpeechEnvironment,
 } from "@/lib/quran/speech-recognition";
-import { isWasmSpeechSupported } from "@/lib/quran/wasm-whisper-session";
 import {
   buildLiveWordStream,
   finalFeedbackAr,
   matchLive,
-  resolveMatchProfile,
   type LiveDisplayWord,
   type MatchProfile,
 } from "@/lib/quran/live-recitation";
@@ -135,21 +130,8 @@ function DirectSessionInner() {
     [pickSurah]
   );
 
-  /** Desktop → webspeech profile (classic match). Mobile → whisper profile. */
-  const matchProfile: MatchProfile = useMemo(
-    () =>
-      resolveMatchProfile(
-        pickSpeechEngine() === "wasm-whisper" ? "whisper" : "webspeech"
-      ),
-    []
-  );
-
-  /** Mobile + Whisper → Batch MVP (record then analyze). Desktop stays live. */
-  const useMobileBatch = useMemo(
-    () =>
-      isMobileSpeechEnvironment() && pickSpeechEngine() === "wasm-whisper",
-    []
-  );
+  /** Unified: Web Speech + soft-ignore profile on desktop AND mobile. */
+  const matchProfile: MatchProfile = "webspeech";
 
   useEffect(() => {
     if (!wordStream.length) return;
@@ -254,13 +236,7 @@ function DirectSessionInner() {
   }, []);
 
   useEffect(() => {
-    // Show which free engine will be used
-    const eng = pickSpeechEngine();
-    setEngineLabel(
-      eng === "wasm-whisper"
-        ? "محرك مجاني مستمر (Whisper داخل المتصفح)"
-        : "محرك المتصفح (Web Speech)"
-    );
+    setEngineLabel("محرك المتصفح (Web Speech) — ديسكتوب وموبايل");
   }, []);
 
   useEffect(() => {
@@ -396,56 +372,30 @@ function DirectSessionInner() {
     setStatusMsg(null);
     setReport(null);
 
-    const eng = pickSpeechEngine();
-    if (eng === "webspeech" && !isSpeechRecognitionSupported()) {
-      if (!isWasmSpeechSupported()) {
-        setSpeechError(
-          "التعرّف على الصوت غير مدعوم على هذا الجهاز/المتصفح."
-        );
-        return;
-      }
-    }
-    if (eng === "wasm-whisper" && !isWasmSpeechSupported()) {
+    if (!isSpeechRecognitionSupported()) {
       setSpeechError(
-        "محرك التعرّف المجاني يحتاج متصفحاً حديثاً واتصالاً آمناً (HTTPS)."
+        "التعرّف على الصوت (Web Speech) غير مدعوم. جرّب Chrome على أندرويد أو سطح المكتب."
       );
       return;
     }
 
     if (!speechRef.current) speechRef.current = new ContinuousArabicSpeech();
 
-    const batch = useMobileBatch;
-    // Mic first phase is inside wasm start; show requesting_mic immediately
     setPhase("requesting_mic");
     setModelStatus("طلب إذن الميكروفون…");
-    // Keep last known % if model already partially loaded (preload / prior attempt)
-    setModelPct((p) => (eng === "wasm-whisper" && p > 0 ? p : 0));
+    setModelPct(0);
 
     try {
       const r = await speechRef.current.start(speechHandlers(), {
         preserveBuffer: preserve,
-        expectedPrompt: buildExpectedPrompt(matchCursorRef.current),
-        mode: batch ? "batch" : "live",
         onPhase: (p) => {
           if (p === "mic") {
             setPhase("requesting_mic");
             setModelStatus("طلب إذن الميكروفون…");
-          } else if (p === "model") {
-            setPhase("loading_model");
-            setModelStatus(
-              batch
-                ? "تحميل المحرك (مرة واحدة)…"
-                : "تحميل/تجهيز النموذج في الخلفية…"
-            );
           } else if (p === "ready") {
-            setModelStatus(batch ? "جاهز للتسجيل…" : "المايك جاهز…");
+            setModelStatus("المايك جاهز…");
             setModelPct(100);
           }
-        },
-        onModelProgress: (pct, status) => {
-          setPhase("loading_model");
-          setModelPct(pct);
-          setModelStatus(status);
         },
       });
 
@@ -459,27 +409,14 @@ function DirectSessionInner() {
         return;
       }
 
-      setEngineLabel(
-        batch
-          ? "موبايل: تسجيل ثم تحليل (Batch) — مجاني محلي"
-          : r.engine === "wasm-whisper"
-            ? "محرك مجاني مستمر (Whisper داخل المتصفح)"
-            : "محرك المتصفح (Web Speech)"
-      );
+      setEngineLabel("محرك المتصفح (Web Speech) — ديسكتوب وموبايل");
       setModelStatus(null);
       setModelPct(100);
-      if (batch) {
-        setPhase("recording");
+      setPhase("listening");
+      if (isMobileSpeechEnvironment()) {
         setStatusMsg(
-          "المايك مفتوح — اقرأ بحرية ثم اضغط «تم التسجيل». لا تحليل أثناء القراءة؛ النتيجة تظهر بعد انتهاء التحليل دفعة واحدة."
+          "تسميع حي عبر Web Speech. إن توقّف المايك، اضغط «متابعة التسميع»."
         );
-      } else {
-        setPhase("listening");
-        if (r.engine === "wasm-whisper") {
-          setStatusMsg(
-            "المايك مفتوح باستمرار. التعرّف يعمل داخل جهازك مجاناً (نوافذ قصيرة)."
-          );
-        }
       }
     } catch (e) {
       const msg =
@@ -500,75 +437,7 @@ function DirectSessionInner() {
     }
   }
 
-  /** Mobile Batch: stop mic → Worker analyzes full clip → matchLive once */
-  async function finishMobileBatch() {
-    if (!speechRef.current) return;
-    setSpeechError(null);
-    setPhase("analyzing");
-    setStatusMsg("جاري تحليل التسجيل داخل جهازك… لن يستغرق ذلك طويلاً.");
-    setModelStatus("تحليل…");
-    try {
-      const r = await speechRef.current.finishBatchTranscription();
-      if (!r.ok) {
-        setSpeechError(r.error || "فشل تحليل التسجيل.");
-        setPhase("idle");
-        setModelStatus(null);
-        setStatusMsg(null);
-        return;
-      }
-      const text = r.text || "";
-      transcriptRef.current = text;
-      const result = matchLive(wordStream, text, {
-        interim: false,
-        strict: true,
-        profile: "whisper",
-      });
-      setLiveWords(result.display);
-      setAccuracy(result.stats.accuracy);
-      setCurrentAyah(result.currentAyah);
-      setMatchCursor(result.cursor);
-      matchCursorRef.current = result.cursor;
-      setModelStatus(null);
 
-      const allCorrect =
-        result.display.length > 0 &&
-        result.display.every((w) => w.status === "correct");
-
-      if (allCorrect) {
-        setPhase("done");
-        setReport(
-          finalFeedbackAr(result.stats, result.lastCompletedAyah, toAyah)
-        );
-        saveSurahRecitationProgress({
-          surahNumber,
-          lastCompletedAyah: result.lastCompletedAyah,
-          continueFromAyah: Math.min(
-            toAyah,
-            (result.lastCompletedAyah || fromAyah) + 1
-          ),
-          totalAyahs: toAyah,
-          lastSessionAt: new Date().toISOString(),
-          accuracy: result.stats.accuracy,
-          mistakesCount: result.stats.incorrect,
-        });
-        setStatusMsg(null);
-      } else {
-        setPhase("paused");
-        setStatusMsg(
-          "انتهى التحليل. راجع الكلمات الحمراء، ثم «أعد التسجيل» أو «إنهاء»."
-        );
-        setReport(
-          finalFeedbackAr(result.stats, result.lastCompletedAyah, toAyah)
-        );
-      }
-    } catch (e) {
-      setSpeechError(
-        "فشل التحليل: " + (e instanceof Error ? e.message : String(e))
-      );
-      setPhase("idle");
-      setModelStatus(null);
-    }
-  }
 
   async function continueListening() {
     if (
@@ -753,21 +622,12 @@ function DirectSessionInner() {
 
   function onPrimaryAction() {
     if (busy) return;
-    if (phase === "recording") {
-      void finishMobileBatch();
-      return;
-    }
     if (phase === "listening") {
       stopListening();
       return;
     }
     if (phase === "paused") {
-      // Mobile batch: re-record. Desktop: resume live listening.
-      if (useMobileBatch) {
-        void startListening(false);
-      } else {
-        void continueListening();
-      }
+      void continueListening();
       return;
     }
     if (phase === "done") {
@@ -782,21 +642,13 @@ function DirectSessionInner() {
       ? "طلب الميكروفون…"
       : phase === "loading_model"
         ? "تحميل المحرك…"
-        : phase === "analyzing"
-          ? "جاري التحليل…"
-          : phase === "recording"
-            ? "تم التسجيل"
-            : phase === "listening"
-              ? "إيقاف"
-              : phase === "paused"
-                ? useMobileBatch
-                  ? "أعد التسجيل"
-                  : "متابعة التسميع"
-                : phase === "done"
-                  ? "العودة للرئيسية"
-                  : useMobileBatch
-                    ? "ابدأ التسجيل"
-                    : "ابدأ التسميع";
+        : phase === "listening"
+          ? "إيقاف"
+          : phase === "paused"
+            ? "متابعة التسميع"
+            : phase === "done"
+              ? "العودة للرئيسية"
+              : "ابدأ التسميع";
 
   function renderWord(w: LiveDisplayWord) {
     /**
@@ -1016,16 +868,9 @@ function DirectSessionInner() {
           )}
           {engineLabel && phase === "idle" && (
             <p className="text-center text-[10px] text-muted-foreground">
-              {useMobileBatch
-                ? "على الموبايل: سجّل ثم «تم» — التحليل دفعة واحدة بعد التسجيل (بدون تقطيع أثناء القراءة)."
-                : isMobileSpeechEnvironment()
-                  ? "على الموبايل: محرك Whisper مجاني داخل المتصفح."
-                  : engineLabel}
-            </p>
-          )}
-          {phase === "analyzing" && (
-            <p className="text-center text-[11px] text-[#D4AF37] font-medium">
-              جاري تحليل التسجيل داخل جهازك… أبقِ الصفحة مفتوحة.
+              {isMobileSpeechEnvironment()
+                ? "على الموبايل والديسكتوب: تسميع حي عبر Web Speech (دقة أعلى للعربية). إن توقّف المايك استخدم «متابعة التسميع»."
+                : engineLabel}
             </p>
           )}
         </div>

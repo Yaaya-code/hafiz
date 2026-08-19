@@ -1,16 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // transformers.js / onnxruntime — client-only WASM STT (free continuous mic)
+  // Keep transformers external if leftover deps resolve; product path no longer bundles Whisper
   serverExternalPackages: ["@huggingface/transformers", "onnxruntime-node"],
-  // Web Worker (whisper.worker.ts) needs a browser globalObject for webpack
-  webpack: (config, { isServer }) => {
-    if (!isServer) {
-      config.output = config.output || {};
-      config.output.globalObject = "self";
-    }
-    return config;
-  },
   // PWA: headers help installability / offline shell
   async headers() {
     return [

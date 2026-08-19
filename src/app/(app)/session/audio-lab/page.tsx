@@ -153,16 +153,26 @@ export default function AudioLabPage() {
 
           {result && (
             <div className="space-y-2 rounded-xl border border-[#D4AF37]/30 bg-[#D4AF37]/5 p-3">
-              <p className="text-center text-sm font-semibold">
-                النتيجة: {result.verdict}
+              <p className="text-center text-lg font-bold tabular-nums">
+                {result.percent}٪
               </p>
-              <Progress value={Math.round(result.score * 100)} className="h-2" />
+              <p className="text-center text-sm font-semibold">
+                الحكم: {result.verdict}
+              </p>
+              <Progress value={result.percent} className="h-2" />
               <p className="text-center text-[11px] text-muted-foreground">
-                درجة التشابه ≈ {Math.round(result.score * 100)}٪ · إطاراتك{" "}
-                {result.userFrames} · المرجع {result.refFrames}
+                إطاراتك {result.userFrames} · المرجع {result.refFrames} · طول
+                المسار {result.pathLength}
+              </p>
+              <p className="text-center text-[10px] text-muted-foreground break-words">
+                مسافة DTW المطبّعة (أقل = أقرب):{" "}
+                {Number.isFinite(result.normalizedCost)
+                  ? result.normalizedCost.toFixed(3)
+                  : "∞"}
               </p>
               <p className="text-center text-[10px] text-muted-foreground">
-                هذه عتبات تجريبية للـ Spike — ستُعايَر لاحقاً بتلاوات حقيقية.
+                بعد قص الصمت + CMVN + تطبيع طول المسار. العتبات للمعايرة
+                الميدانية.
               </p>
             </div>
           )}
